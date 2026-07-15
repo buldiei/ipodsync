@@ -84,7 +84,14 @@ Find the iPod's partition (an `hfsplus` one, roughly the iPod's size):
 lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT      # e.g.  sda2  14.7G  hfsplus
 ```
 
-Read-only is enough for `list` / `export`:
+For read commands (`list` / `export`), the quickest way is `--mount`, which mounts
+the iPod for you via `udisksctl` (no root) and runs the command:
+
+```bash
+ipodsync --mount list
+```
+
+Or mount it yourself:
 
 ```bash
 sudo modprobe hfsplus
@@ -94,16 +101,27 @@ IPODSYNC_MOUNT=/mnt/ipod ipodsync list
 sudo umount /mnt/ipod                     # before unplugging
 ```
 
-**Writing (`add` / `rm` / `cover`) needs a read-write mount** — and there's a catch:
-a Mac-formatted iPod uses **journaled HFS+**, which the Linux driver mounts
-read-only by default. The safe fix is to disable the journal once, on a Mac:
+**Writing (`add` / `rm` / `cover`) on Linux** needs a read-write mount owned by
+your user (so it can write files), and the GUID (below). Mount it like this:
 
 ```bash
-diskutil disableJournal /Volumes/iPod     # run on macOS, with the iPod attached
+sudo mount -t hfsplus -o rw,uid=$(id -u),gid=$(id -g) /dev/sda2 /mnt/ipod
 ```
 
-after which `sudo mount -t hfsplus -o rw /dev/sda2 /mnt/ipod` works. Forcing it with
-`-o force,rw` on a still-journaled volume can corrupt the filesystem — don't.
+Two catches:
+
+- **The GUID.** Signing needs the device's FireWireGUID, which lives in a
+  `Device/SysInfo*` file — but those are HFS+-compressed and unreadable by the Linux
+  driver. ipodsync works around it by reading the GUID from the device's **USB serial**
+  automatically. If that fails, pass it yourself:
+  ```bash
+  udevadm info -q property -n /dev/sda | grep ID_SERIAL
+  #   ID_SERIAL=Apple_iPod_0123456789ABCDEF-0:0
+  IPODSYNC_FIREWIRE_GUID=0123456789ABCDEF IPODSYNC_MOUNT=/mnt/ipod ipodsync add song.mp3
+  ```
+- **Journaling.** If the mount comes up read-only, the volume is *journaled* HFS+;
+  disable the journal once, on a Mac: `diskutil disableJournal /Volumes/iPod`. Forcing
+  it with `-o force,rw` on a still-journaled volume can corrupt the filesystem — don't.
 
 ## How it works
 

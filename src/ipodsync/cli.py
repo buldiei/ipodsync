@@ -14,6 +14,7 @@ or a sync will drop manually-added tracks.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,7 +78,7 @@ def cmd_rm(ipod, args):
     shutil.copytree(itlp, backup)
     print(f".itlp backup: {backup}")
 
-    guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo)
+    guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
     lib = ItlpLibrary(itlp)
     music = ipod.music_dir if args.delete_file else None
     loc = lib.remove_track(args.pid, music_dir=music)
@@ -181,7 +182,7 @@ def cmd_add(ipod, args):
     shutil.copytree(itlp, backup)
     print(f".itlp backup: {backup}")
 
-    guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo)
+    guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
     location, abs_path = copy_audio_to_ipod(ipod, args.file)
     print(f"File copied: {location}")
 
@@ -264,6 +265,8 @@ def main() -> int:
         epilog="Set IPODSYNC_MOUNT=/path to point at the iPod explicitly. "
                "add/rm/cover back up the library before editing. Run "
                "`ipodsync <command> -h` for per-command help.")
+    ap.add_argument("--mount", action="store_true",
+                    help="Linux: mount the iPod first via udisksctl (read-only)")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     sub.add_parser("list", help="show tracks on the iPod")
@@ -308,6 +311,16 @@ def main() -> int:
     pcv.add_argument("--image", help="cover image file (otherwise the track's APIC is used)")
 
     args = ap.parse_args()
+
+    if args.mount:
+        from ipodsync.transport import mount_ipod
+        try:
+            mp = mount_ipod()
+        except IPodNotFound as e:
+            print(f"⚠️  {e}")
+            return 2
+        os.environ["IPODSYNC_MOUNT"] = mp
+        print(f"Mounted iPod at {mp}")
 
     # commands that don't require a ready iPod
     if args.cmd == "status":

@@ -16,6 +16,8 @@ removable volume when the terminal lacks Full Disk Access (TCC). We tell that st
 from __future__ import annotations
 
 import os
+import re
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -140,10 +142,7 @@ def find_ipod(name_hint: str = "iPod") -> IPod:
         return ipod
     if status is Access.NO_ACCESS:
         raise IPodNotFound(NO_ACCESS_HINT.format(vols=", ".join(v.name for v in blocked)))
-    raise IPodNotFound(
-        "iPod not found. Connect the device (enable Disk Use), or set "
-        "IPODSYNC_MOUNT=/path/to/mount."
-    )
+    raise IPodNotFound(_not_found_message())
 
 
 def wait_for_ipod(timeout: float = 120, interval: float = 2,
@@ -163,3 +162,70 @@ def wait_for_ipod(timeout: float = 120, interval: float = 2,
             raise IPodNotFound(f"iPod did not become available within {timeout}s "
                                f"(last state: {status.value})")
         time.sleep(interval)
+
+
+# --- Linux: detect / mount an unmounted iPod block device -----------------------
+def _run(cmd: list[str]) -> tuple[str, str]:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        return p.stdout, p.stderr
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
+
+
+def find_ipod_block_device() -> dict | None:
+    """Linux: locate the iPod's HFS+ block device.
+
+    Lists hfsplus partitions and confirms each is an Apple iPod via udev
+    (lsblk vendor/model aren't always populated on the partition).
+    Returns {'path': '/dev/sdXN', 'mountpoint': str|None} or None.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    out, _ = _run(["lsblk", "-rno", "PATH,FSTYPE,MOUNTPOINT"])
+    for line in out.splitlines():
+        f = line.split(None, 2)
+        if len(f) < 2 or f[1] != "hfsplus":
+            continue
+        path, mp = f[0], (f[2] if len(f) > 2 else "")
+        info, _ = _run(["udevadm", "info", "-q", "property", "-n", path])
+        low = info.lower()
+        if ("apple_ipod" in low or "id_model=ipod" in low
+                or "id_vendor=apple" in low or "scsi_vendor=apple" in low):
+            return {"path": path, "mountpoint": mp or None}
+    return None
+
+
+def _not_found_message() -> str:
+    dev = find_ipod_block_device()
+    if dev and dev.get("path") and not dev.get("mountpoint"):
+        return (f"iPod detected at {dev['path']} but not mounted.\n"
+                f"  Mount it (read-only, for list/export):  ipodsync --mount <command>\n"
+                f"  or manually:                            udisksctl mount -b {dev['path']}\n"
+                "  For writing (add/rm) mount read-write with uid= — see the README "
+                "\"Linux: mounting the iPod\".")
+    return ("iPod not found. Connect the device (enable Disk Use on the iPod), "
+            "or set IPODSYNC_MOUNT=/path/to/mount.")
+
+
+def mount_ipod() -> str:
+    """Mount the iPod via udisksctl (Linux, no root). Returns the mountpoint.
+
+    This is read-only for a journaled HFS+ volume — enough for list/export; for
+    add/rm mount read-write with uid= yourself (see the README).
+    """
+    if sys.platform == "darwin":
+        raise IPodNotFound("On macOS the iPod is mounted automatically by Finder.")
+    dev = find_ipod_block_device()
+    if not dev or not dev.get("path"):
+        raise IPodNotFound("No iPod block device found — is it connected?")
+    if dev.get("mountpoint"):
+        return dev["mountpoint"]
+    out, err = _run(["udisksctl", "mount", "-b", dev["path"]])
+    m = re.search(r"\bat\s+(\S+)", out)
+    if m:
+        return m.group(1).rstrip(".")
+    raise IPodNotFound(
+        f"Could not mount {dev['path']} via udisksctl"
+        + (f": {err.strip()}" if err.strip() else "")
+        + ". Mount it manually — see the README.")
