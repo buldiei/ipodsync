@@ -66,7 +66,11 @@ ipodsync add "Song.mp3" --no-cover
 ipodsync export ~/Music/ipod --by-album
 ipodsync cover 123456789 --image cover.jpg
 ipodsync rm 123456789 --delete-file
+ipodsync -b add "Song.mp3"          # -b: back up the library first (off by default)
 ```
+
+Writes don't back up the library by default — pass `-b` / `--backup` to snapshot
+`iTunes Library.itlp` to `~/ipod-backups` before editing.
 
 The iPod is discovered under `/Volumes` (macOS) and `/media`, `/run/media`, `/mnt`
 (Linux) by the presence of `iPod_Control/`. To point at it explicitly, set
@@ -84,8 +88,8 @@ Find the iPod's partition (an `hfsplus` one, roughly the iPod's size):
 lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT      # e.g.  sda2  14.7G  hfsplus
 ```
 
-For read commands (`list` / `export`), the quickest way is `--mount`, which mounts
-the iPod for you via `udisksctl` (no root) and runs the command:
+For read commands (`list` / `export`), the quickest way is `--mount`: it detects the
+device, mounts it read-only (asks for `sudo`), runs the command, then unmounts:
 
 ```bash
 ipodsync --mount list
@@ -101,11 +105,20 @@ IPODSYNC_MOUNT=/mnt/ipod ipodsync list
 sudo umount /mnt/ipod                     # before unplugging
 ```
 
-**Writing (`add` / `rm` / `cover`) on Linux** needs a read-write mount owned by
-your user (so it can write files), and the GUID (below). Mount it like this:
+**Writing (`add` / `rm` / `cover`) on Linux.** `--mount` handles it in one command —
+it detects the device, mounts HFS+ read-write owned by your user (asks for `sudo`),
+runs the command, then unmounts:
+
+```bash
+ipodsync --mount add song.mp3
+ipodsync --mount -b add song.mp3    # -b: snapshot the library to ~/ipod-backups first
+```
+
+Or mount it yourself and point `IPODSYNC_MOUNT` at it:
 
 ```bash
 sudo mount -t hfsplus -o rw,uid=$(id -u),gid=$(id -g) /dev/sda2 /mnt/ipod
+IPODSYNC_MOUNT=/mnt/ipod ipodsync add song.mp3
 ```
 
 Two catches:

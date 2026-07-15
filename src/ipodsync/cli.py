@@ -7,9 +7,9 @@
     ipodsync rm PID [--delete-file]    # remove a track (+resign)
     ipodsync cover PID [--image IMG]   # attach a cover to a track
 
-Export is read-only for the device. add/rm/cover write to the database (they back up .itlp).
-Browsing the iPod in Finder/Music is fine; just don't let Apple's software auto-sync it,
-or a sync will drop manually-added tracks.
+Export is read-only. add/rm/cover write to the database; pass -b to back the library
+up to ~/ipod-backups first. Browsing the iPod in Finder/Music is fine; just don't let
+Apple's software auto-sync it, or a sync will drop manually-added tracks.
 """
 from __future__ import annotations
 
@@ -73,10 +73,7 @@ def cmd_export(ipod, args):
 def cmd_rm(ipod, args):
     itlp = ipod.itunes_dir / "iTunes Library.itlp"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = Path.home() / "ipod-backups" / f"itlp-{stamp}"
-    backup.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(itlp, backup)
-    print(f".itlp backup: {backup}")
+    backup = _backup_library(itlp, stamp) if args.backup else None
 
     guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
     lib = ItlpLibrary(itlp)
@@ -84,21 +81,20 @@ def cmd_rm(ipod, args):
     loc = lib.remove_track(args.pid, music_dir=music)
     lib.resign(guid)
     lib.close()
-    print(f"Removed track pid={args.pid} (file: {loc or '—'}"
-          f"{', deleted' if args.delete_file else ''}). Eject iPod.")
-    print(f"Rollback: rm -rf '{itlp}' && cp -r '{backup}' '{itlp}'")
+    print(f"✓ Removed track pid {args.pid}"
+          f"{' (+ deleted the file)' if args.delete_file else ''}. Eject the iPod.")
+    if backup:
+        print(f"  Undo: rm -rf '{itlp}' && cp -r '{backup}' '{itlp}'")
 
 
-def _edit_library(ipod, fn, *, label: str):
-    """Back up .itlp, edit a copy via fn(lib), copy Library/Dynamic.itdb back.
+def _edit_library(ipod, fn, *, label: str, backup: bool = False):
+    """Edit a /tmp copy via fn(lib), copy Library/Dynamic.itdb back.
 
     Playlist operations don't touch Locations.itdb, so we don't rebuild cbk.
     """
     itlp = ipod.itunes_dir / "iTunes Library.itlp"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = Path.home() / "ipod-backups" / f"itlp-{stamp}"
-    backup.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(itlp, backup)
+    bak = _backup_library(itlp, stamp) if backup else None
     work = Path("/tmp") / f"itlp_{label}_{stamp}"
     shutil.copytree(itlp, work)
 
@@ -109,7 +105,7 @@ def _edit_library(ipod, fn, *, label: str):
         lib.close()
     for name in ("Library.itdb", "Dynamic.itdb"):
         shutil.copy2(work / name, itlp / name)
-    print(f".itlp backup: {backup}. Eject iPod.")
+    print("✓ Done — eject the iPod." + (f"  (backup: {bak.name})" if bak else ""))
     return result
 
 
@@ -123,24 +119,24 @@ def cmd_playlists(ipod, args):
 
 def cmd_pl_create(ipod, args):
     pid = _edit_library(ipod, lambda lib: lib.create_playlist(args.name, date=_mac_now()),
-                        label="plcreate")
+                        label="plcreate", backup=args.backup)
     print(f"Created playlist '{args.name}' pid={pid}")
 
 
 def cmd_pl_add(ipod, args):
     _edit_library(ipod, lambda lib: [lib.add_to_playlist(args.playlist, t) for t in args.track],
-                  label="pladd")
+                  label="pladd", backup=args.backup)
     print(f"Tracks added: {len(args.track)} → playlist {args.playlist}")
 
 
 def cmd_pl_rm(ipod, args):
     _edit_library(ipod, lambda lib: lib.remove_from_playlist(args.playlist, args.track),
-                  label="plrm")
+                  label="plrm", backup=args.backup)
     print(f"Track {args.track} removed from playlist {args.playlist}")
 
 
 def cmd_pl_del(ipod, args):
-    _edit_library(ipod, lambda lib: lib.delete_playlist(args.playlist), label="pldel")
+    _edit_library(ipod, lambda lib: lib.delete_playlist(args.playlist), label="pldel", backup=args.backup)
     print(f"Playlist {args.playlist} deleted")
 
 
@@ -177,30 +173,37 @@ def cmd_add(ipod, args):
     """Upload an MP3 to the iPod: audio -> Fxx/ (onto the device), .itlp -> edit a copy -> back."""
     itlp = ipod.itunes_dir / "iTunes Library.itlp"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = Path.home() / "ipod-backups" / f"itlp-{stamp}"
-    backup.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(itlp, backup)
-    print(f".itlp backup: {backup}")
+    backup = _backup_library(itlp, stamp) if args.backup else None
 
     guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
+    print("→ copying the track onto the iPod…")
     location, abs_path = copy_audio_to_ipod(ipod, args.file)
-    print(f"File copied: {location}")
 
     work = Path("/tmp") / f"itlp_add_{stamp}"
     shutil.copytree(itlp, work)
     overrides = {"title": args.title, "artist": args.artist, "album": args.album}
     art_dir = None if args.no_cover else ipod.control / "Artwork"
-    if art_dir is not None:
+    if art_dir is not None and args.backup:
         _backup_artwork(ipod, stamp)
     pid = add_mp3_to_library(work, location, args.file, abs_path.stat().st_size,
                              guid, overrides=overrides, artwork_dir=art_dir)
     for name in ("Library.itdb", "Locations.itdb", "Dynamic.itdb",
                  "Extras.itdb", "Locations.itdb.cbk"):
         shutil.copy2(work / name, itlp / name)
-    print(f"Track added pid={pid}"
-          f"{'' if args.no_cover else ' (cover attached if one was embedded)'}."
-          " Eject iPod and check Songs.")
-    print(f"Rollback: rm -rf '{itlp}' && cp -r '{backup}' '{itlp}'")
+    cover = "" if args.no_cover else " (+ cover art)"
+    print(f"✓ Added \"{Path(args.file).name}\"{cover}  ·  pid {pid}")
+    print("  Eject the iPod, then check Songs.")
+    if backup:
+        print(f"  Undo: rm -rf '{itlp}' && cp -r '{backup}' '{itlp}'")
+
+
+def _backup_library(itlp: Path, stamp: str) -> Path:
+    """Copy the whole .itlp to ~/ipod-backups (only when -b/--backup is given)."""
+    dst = Path.home() / "ipod-backups" / f"itlp-{stamp}"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(itlp, dst)
+    print(f"→ backed up the library ({dst.name})")
+    return dst
 
 
 def _backup_artwork(ipod, stamp: str) -> None:
@@ -208,8 +211,7 @@ def _backup_artwork(ipod, stamp: str) -> None:
     art = ipod.control / "Artwork"
     if art.exists():
         dst = Path.home() / "ipod-backups" / f"Artwork-{stamp}"
-        shutil.copytree(art, dst)
-        print(f"Artwork backup: {dst}")
+        shutil.copytree(art, dst)  # backed up alongside the library
 
 
 def cmd_cover(ipod, args):
@@ -220,7 +222,8 @@ def cmd_cover(ipod, args):
 
     itlp = ipod.itunes_dir / "iTunes Library.itlp"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    _backup_artwork(ipod, stamp)
+    if args.backup:
+        _backup_artwork(ipod, stamp)
 
     if args.image:
         cover = Path(args.image).read_bytes()
@@ -252,8 +255,7 @@ def cmd_cover(ipod, args):
     finally:
         lib.close()
     shutil.copy2(work / "Library.itdb", itlp / "Library.itdb")
-    print(f"Cover attached to pid={args.pid} (cache_id={image_id}, "
-          f"album{'+' if album_pid else ' —'}). Eject iPod.")
+    print(f"✓ Cover attached to pid {args.pid}. Eject the iPod and check the album art.")
 
 
 def main() -> int:
@@ -266,7 +268,10 @@ def main() -> int:
                "add/rm/cover back up the library before editing. Run "
                "`ipodsync <command> -h` for per-command help.")
     ap.add_argument("--mount", action="store_true",
-                    help="Linux: mount the iPod first via udisksctl (read-only)")
+                    help="Linux: auto-mount the iPod (sudo) before the command, unmount after")
+    ap.add_argument("-b", "--backup", action="store_true",
+                    help="back up the library to ~/ipod-backups before editing "
+                         "(off by default)")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     sub.add_parser("list", help="show tracks on the iPod")
@@ -312,22 +317,33 @@ def main() -> int:
 
     args = ap.parse_args()
 
+    WRITE_CMDS = {"add", "rm", "cover", "pl-create", "pl-add", "pl-rm", "pl-del"}
+    mounted = None
     if args.mount:
         from ipodsync.transport import mount_ipod
         try:
-            mp = mount_ipod()
+            mp, mounted_by_us = mount_ipod(rw=args.cmd in WRITE_CMDS)
         except IPodNotFound as e:
             print(f"⚠️  {e}")
             return 2
         os.environ["IPODSYNC_MOUNT"] = mp
-        print(f"Mounted iPod at {mp}")
+        print(f"✓ iPod mounted at {mp}")
+        mounted = mp if mounted_by_us else None
 
-    # commands that don't require a ready iPod
+    try:
+        return _dispatch(args)
+    finally:
+        if mounted:
+            from ipodsync.transport import umount_ipod
+            umount_ipod(mounted)
+            print(f"✓ iPod unmounted — safe to unplug")
+
+
+def _dispatch(args) -> int:
     if args.cmd == "status":
         return cmd_status(args)
     if args.cmd == "wait":
         return cmd_wait(args)
-
     try:
         ipod = find_ipod()
     except IPodNotFound as e:

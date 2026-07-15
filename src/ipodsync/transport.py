@@ -208,11 +208,15 @@ def _not_found_message() -> str:
             "or set IPODSYNC_MOUNT=/path/to/mount.")
 
 
-def mount_ipod() -> str:
-    """Mount the iPod via udisksctl (Linux, no root). Returns the mountpoint.
+MOUNTPOINT = "/mnt/ipodsync"
 
-    This is read-only for a journaled HFS+ volume — enough for list/export; for
-    add/rm mount read-write with uid= yourself (see the README).
+
+def mount_ipod(rw: bool = False) -> tuple[str, bool]:
+    """Mount the iPod on Linux via `sudo mount` (asks for a password if needed).
+
+    Auto-detects the current device node (which changes across re-plugs), mounts
+    HFS+ read-only (or force,rw,uid= for writes) at MOUNTPOINT. Returns
+    (mountpoint, mounted_by_us) — if it was already mounted, mounted_by_us is False.
     """
     if sys.platform == "darwin":
         raise IPodNotFound("On macOS the iPod is mounted automatically by Finder.")
@@ -220,12 +224,18 @@ def mount_ipod() -> str:
     if not dev or not dev.get("path"):
         raise IPodNotFound("No iPod block device found — is it connected?")
     if dev.get("mountpoint"):
-        return dev["mountpoint"]
-    out, err = _run(["udisksctl", "mount", "-b", dev["path"]])
-    m = re.search(r"\bat\s+(\S+)", out)
-    if m:
-        return m.group(1).rstrip(".")
-    raise IPodNotFound(
-        f"Could not mount {dev['path']} via udisksctl"
-        + (f": {err.strip()}" if err.strip() else "")
-        + ". Mount it manually — see the README.")
+        return dev["mountpoint"], False
+    opts = f"force,rw,uid={os.getuid()},gid={os.getgid()},umask=022" if rw else "ro"
+    print(f"Mounting {dev['path']} at {MOUNTPOINT} ({opts})…")
+    subprocess.run(["sudo", "mkdir", "-p", MOUNTPOINT])          # inherit stdio (prompt)
+    r = subprocess.run(["sudo", "mount", "-t", "hfsplus", "-o", opts,
+                        dev["path"], MOUNTPOINT])
+    if r.returncode != 0:
+        raise IPodNotFound(
+            f"Failed to mount {dev['path']} (see the error above). "
+            "See the README \"Linux: mounting the iPod\".")
+    return MOUNTPOINT, True
+
+
+def umount_ipod(mountpoint: str) -> None:
+    subprocess.run(["sudo", "umount", mountpoint])
