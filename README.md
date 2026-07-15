@@ -1,5 +1,10 @@
 # ipodsync
 
+[![CI](https://github.com/buldiei/ipodsync/actions/workflows/ci.yml/badge.svg)](https://github.com/buldiei/ipodsync/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ipodsync.svg)](https://pypi.org/project/ipodsync/)
+[![Python](https://img.shields.io/pypi/pyversions/ipodsync.svg)](https://pypi.org/project/ipodsync/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Upload music to an **iPod nano 6G/7G** without iTunes/Apple Music — straight from
 the terminal, on macOS and Linux. The iPod mounts as a plain volume; `ipodsync`
 edits its SQLite library, signs it (hashAB) and **generates cover art itself**.
