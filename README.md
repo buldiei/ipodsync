@@ -72,6 +72,39 @@ The iPod is discovered under `/Volumes` (macOS) and `/media`, `/run/media`, `/mn
 (Linux) by the presence of `iPod_Control/`. To point at it explicitly, set
 `IPODSYNC_MOUNT=/path/to/mount`.
 
+## Linux: mounting the iPod
+
+On macOS, Finder mounts the iPod automatically. A headless Linux box usually
+doesn't — the device shows up as a disk but stays unmounted, so `ipodsync` reports
+"iPod not found". Mount it yourself, then point `IPODSYNC_MOUNT` at it.
+
+Find the iPod's partition (an `hfsplus` one, roughly the iPod's size):
+
+```bash
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT      # e.g.  sda2  14.7G  hfsplus
+```
+
+Read-only is enough for `list` / `export`:
+
+```bash
+sudo modprobe hfsplus
+sudo mkdir -p /mnt/ipod
+sudo mount -t hfsplus -o ro /dev/sda2 /mnt/ipod
+IPODSYNC_MOUNT=/mnt/ipod ipodsync list
+sudo umount /mnt/ipod                     # before unplugging
+```
+
+**Writing (`add` / `rm` / `cover`) needs a read-write mount** — and there's a catch:
+a Mac-formatted iPod uses **journaled HFS+**, which the Linux driver mounts
+read-only by default. The safe fix is to disable the journal once, on a Mac:
+
+```bash
+diskutil disableJournal /Volumes/iPod     # run on macOS, with the iPod attached
+```
+
+after which `sudo mount -t hfsplus -o rw /dev/sda2 /mnt/ipod` works. Forcing it with
+`-o force,rw` on a still-journaled volume can corrupt the filesystem — don't.
+
 ## How it works
 
 - **Transport** — mass storage: files are written under `iPod_Control/`.
