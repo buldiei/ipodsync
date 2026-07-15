@@ -4,7 +4,7 @@
     ipodsync export DEST [--by-album] [--no-tag]   # download everything from the iPod
     ipodsync export DEST --pid PID     # download a single track
     ipodsync add FILE [--no-cover]     # upload a track (+cover auto)
-    ipodsync rm PID [--delete-file]    # remove a track (+resign)
+    ipodsync rm PID [--keep-file]      # remove a track + its file (+resign)
     ipodsync cover PID [--image IMG]   # attach a cover to a track
 
 Export is read-only. add/rm/cover write to the database; pass -b to back the library
@@ -79,9 +79,12 @@ def cmd_rm(ipod, args):
     if args.backup:
         _backup_artwork(ipod, stamp)
 
+    if args.delete_file:  # deprecated: deleting the file is the default now
+        print("  note: --delete-file is now the default; drop it, or use --keep-file to keep the file.")
+
     guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
     lib = ItlpLibrary(itlp)
-    music = ipod.music_dir if args.delete_file else None
+    music = None if args.keep_file else ipod.music_dir   # delete the file unless --keep-file
     lib.remove_track(args.pid, music_dir=music)
     lib.resign(guid)
     live = {t["pid"] for t in lib.list_tracks()}   # remaining tracks, after removal
@@ -90,8 +93,8 @@ def cmd_rm(ipod, args):
     # drop the removed track's thumbnails from ArtworkDB + repack the .ithmb files
     stats = compact(ipod.control / "Artwork", live)
 
-    print(f"✓ Removed track pid {args.pid}"
-          f"{' (+ deleted the file)' if args.delete_file else ''}. Eject the iPod.")
+    tail = " (kept the audio file)" if args.keep_file else " (+ deleted the file)"
+    print(f"✓ Removed track pid {args.pid}{tail}. Eject the iPod.")
     if stats["removed"]:
         print(f"  Reclaimed cover art for {stats['removed']} track"
               f"{'s' if stats['removed'] != 1 else ''}.")
@@ -335,7 +338,10 @@ def main() -> int:
 
     pr = sub.add_parser("rm", help="remove a track from the iPod")
     pr.add_argument("pid", type=int, help="track pid (see `list`)")
-    pr.add_argument("--delete-file", action="store_true", help="also delete the audio file")
+    pr.add_argument("--keep-file", action="store_true",
+                    help="keep the audio file on the iPod (default: delete it too)")
+    pr.add_argument("--delete-file", action="store_true",
+                    help=argparse.SUPPRESS)  # deprecated: deletion is the default now
 
     pa = sub.add_parser("add", help="upload a track (or a whole folder); cover attached automatically")
     pa.add_argument("file", nargs="*", help="path(s) to the audio file(s) to upload")

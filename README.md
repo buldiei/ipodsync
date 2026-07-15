@@ -67,7 +67,8 @@ ipodsync add -f ~/Music/album       # a whole folder (recursively)
 ipodsync add "Song.mp3" --no-cover
 ipodsync export ~/Music/ipod --by-album
 ipodsync cover 123456789 --image cover.jpg
-ipodsync rm 123456789 --delete-file
+ipodsync rm 123456789               # removes the track and its audio file
+ipodsync rm 123456789 --keep-file   # …but leave the audio file on the iPod
 ipodsync -b add "Song.mp3"          # -b: back up the library first (off by default)
 ```
 
