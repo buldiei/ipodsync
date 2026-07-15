@@ -9,9 +9,12 @@ Upload music to an **iPod nano 6G/7G** without iTunes/Apple Music — straight f
 the terminal, on macOS and Linux. The iPod mounts as a plain volume; `ipodsync`
 edits its SQLite library, signs it (hashAB) and **generates cover art itself**.
 
-> ⚠️ Alpha. Works on real hardware, but it writes to the player's binary database.
-> **Keep backups** (the tool makes one before every edit) and don't open this iPod
-> in iTunes.
+> ⚠️ Alpha. Works on real hardware, but it writes to the player's binary database,
+> so **keep backups** (the tool makes one before every edit). Browsing the iPod in
+> Finder or the Music app is fine — just don't let Apple's software **auto-sync** it:
+> a sync rebuilds the library from your computer and would drop manually-added tracks
+> (keep the iPod in "manually manage music" mode). "iTunes" only exists on older macOS
+> (≤ Mojave) and Windows; newer macOS uses Finder + the Music app.
 
 ## Features
 

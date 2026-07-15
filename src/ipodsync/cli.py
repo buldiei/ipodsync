@@ -8,7 +8,8 @@
     ipodsync cover PID [--image IMG]   # attach a cover to a track
 
 Export is read-only for the device. add/rm/cover write to the database (they back up .itlp).
-Do not open this iPod in iTunes.
+Browsing the iPod in Finder/Music is fine; just don't let Apple's software auto-sync it,
+or a sync will drop manually-added tracks.
 """
 from __future__ import annotations
 
