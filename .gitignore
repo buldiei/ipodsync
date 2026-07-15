@@ -1,0 +1,25 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# object files (none expected — pure-Python package)
+*.o
+*.obj
+
+# iPod database backups — never commit (personal data)
+*.bak
+ipod-backups/
+
+# local-only material (non-English notes, scratch, personal docs)
+local/
+
+# editors / IDEs
+.idea/
+.vscode/
+
+.DS_Store

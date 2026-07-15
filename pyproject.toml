@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ipodsync"
+version = "0.1.0"
+description = "Upload music to an iPod nano 6G/7G without iTunes: SQLite library, hashAB signing, cover art (pure-Python)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Alex Buldiei", email = "abuldiei@gmail.com" }]
+keywords = ["ipod", "nano", "itunes", "music", "sync", "artwork"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "mutagen>=1.47",   # audio metadata + embedded cover art
+    "Pillow>=10.0",    # resize cover art to RGB565 for .ithmb
+]
+
+[project.urls]
+Homepage = "https://github.com/buldiei/ipodsync"
+Repository = "https://github.com/buldiei/ipodsync"
+Issues = "https://github.com/buldiei/ipodsync/issues"
+LinkedIn = "https://www.linkedin.com/in/alex-buldiei-b10a9a150/"
+
+[project.scripts]
+ipodsync = "ipodsync.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ipodsync"]
+# hashAB is pure-Python; no native lib needed. The white-box AES tables (433 KB)
+# ship as package data.
+artifacts = ["*.bin"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
