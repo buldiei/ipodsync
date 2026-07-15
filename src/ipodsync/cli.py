@@ -256,39 +256,57 @@ def cmd_cover(ipod, args):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("list")
-    pe = sub.add_parser("export")
-    pe.add_argument("dest")
-    pe.add_argument("--pid", type=int)
-    pe.add_argument("--by-album", action="store_true")
-    pe.add_argument("--no-tag", action="store_true")
-    pr = sub.add_parser("rm")
-    pr.add_argument("pid", type=int)
-    pr.add_argument("--delete-file", action="store_true")
-    pa = sub.add_parser("add")
-    pa.add_argument("file", help="path to MP3")
-    pa.add_argument("--title")
-    pa.add_argument("--artist")
-    pa.add_argument("--album")
-    pa.add_argument("--no-cover", action="store_true",
-                    help="don't attach the embedded cover")
-    sub.add_parser("status")
-    pw = sub.add_parser("wait")
-    pw.add_argument("--timeout", type=float, default=120)
-    pw.add_argument("--interval", type=float, default=2)
+    ap = argparse.ArgumentParser(
+        prog="ipodsync",
+        description="Upload music to an iPod nano 6G/7G without iTunes (macOS + Linux). "
+                    "The iPod mounts as a plain volume; ipodsync edits its SQLite library, "
+                    "signs it (hashAB) and writes cover art.",
+        epilog="Set IPODSYNC_MOUNT=/path to point at the iPod explicitly. "
+               "add/rm/cover back up the library before editing. Run "
+               "`ipodsync <command> -h` for per-command help.")
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
-    sub.add_parser("playlists")
-    pc = sub.add_parser("pl-create"); pc.add_argument("name")
-    ppa = sub.add_parser("pl-add")
-    ppa.add_argument("playlist", type=int); ppa.add_argument("track", type=int, nargs="+")
-    ppr = sub.add_parser("pl-rm")
-    ppr.add_argument("playlist", type=int); ppr.add_argument("track", type=int)
-    ppd = sub.add_parser("pl-del"); ppd.add_argument("playlist", type=int)
-    pcv = sub.add_parser("cover")
-    pcv.add_argument("pid", type=int)
+    sub.add_parser("list", help="show tracks on the iPod")
+
+    pe = sub.add_parser("export", help="download tracks from the iPod (read-only)")
+    pe.add_argument("dest", help="destination directory")
+    pe.add_argument("--pid", type=int, help="export only this track (by pid)")
+    pe.add_argument("--by-album", action="store_true", help="lay out as Artist/Album/")
+    pe.add_argument("--no-tag", action="store_true", help="don't write ID3/MP4 tags")
+
+    pr = sub.add_parser("rm", help="remove a track from the iPod")
+    pr.add_argument("pid", type=int, help="track pid (see `list`)")
+    pr.add_argument("--delete-file", action="store_true", help="also delete the audio file")
+
+    pa = sub.add_parser("add", help="upload an MP3 (cover attached automatically)")
+    pa.add_argument("file", help="path to the MP3 to upload")
+    pa.add_argument("--title", help="override the title tag")
+    pa.add_argument("--artist", help="override the artist tag")
+    pa.add_argument("--album", help="override the album tag")
+    pa.add_argument("--no-cover", action="store_true", help="don't attach the embedded cover")
+
+    sub.add_parser("status", help="report ready / no-access / not-connected")
+
+    pw = sub.add_parser("wait", help="block until an iPod is ready")
+    pw.add_argument("--timeout", type=float, default=120, help="seconds to wait (0 = forever)")
+    pw.add_argument("--interval", type=float, default=2, help="poll interval, seconds")
+
+    sub.add_parser("playlists", help="list playlists")
+    pc = sub.add_parser("pl-create", help="create a playlist")
+    pc.add_argument("name", help="playlist name")
+    ppa = sub.add_parser("pl-add", help="add tracks to a playlist")
+    ppa.add_argument("playlist", type=int, help="playlist pid")
+    ppa.add_argument("track", type=int, nargs="+", help="track pid(s)")
+    ppr = sub.add_parser("pl-rm", help="remove a track from a playlist")
+    ppr.add_argument("playlist", type=int, help="playlist pid")
+    ppr.add_argument("track", type=int, help="track pid")
+    ppd = sub.add_parser("pl-del", help="delete a playlist")
+    ppd.add_argument("playlist", type=int, help="playlist pid")
+
+    pcv = sub.add_parser("cover", help="attach a cover to an existing track")
+    pcv.add_argument("pid", type=int, help="track pid")
     pcv.add_argument("--image", help="cover image file (otherwise the track's APIC is used)")
+
     args = ap.parse_args()
 
     # commands that don't require a ready iPod

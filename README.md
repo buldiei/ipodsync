@@ -1,8 +1,8 @@
 # ipodsync
 
 [![CI](https://github.com/buldiei/ipodsync/actions/workflows/ci.yml/badge.svg)](https://github.com/buldiei/ipodsync/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/ipodsync.svg)](https://pypi.org/project/ipodsync/)
-[![Python](https://img.shields.io/pypi/pyversions/ipodsync.svg)](https://pypi.org/project/ipodsync/)
+[![PyPI](https://img.shields.io/pypi/v/ipodsync.svg?v=2)](https://pypi.org/project/ipodsync/)
+[![Python](https://img.shields.io/pypi/pyversions/ipodsync.svg?v=2)](https://pypi.org/project/ipodsync/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Upload music to an **iPod nano 6G/7G** without iTunes/Apple Music — straight from
@@ -27,9 +27,29 @@ edits its SQLite library, signs it (hashAB) and **generates cover art itself**.
 
 ## Install
 
+`ipodsync` is a command-line tool, so install it with **pipx** — it lands in an
+isolated environment while the `ipodsync` command stays available everywhere:
+
 ```bash
-pipx install ipodsync      # recommended (isolated), or: pip install ipodsync
+pipx install ipodsync
 ```
+
+No pipx yet? `brew install pipx` (macOS) or `sudo apt install pipx` (Debian/Ubuntu),
+then `pipx ensurepath`.
+
+<details>
+<summary><code>pip install ipodsync</code> fails with <code>externally-managed-environment</code>?</summary>
+
+On modern Debian/Ubuntu (PEP 668) the system Python is locked, so a plain
+`pip install` into it is refused — that's an OS guard, not an ipodsync issue.
+Use `pipx` (above), or a virtualenv:
+
+```bash
+python3 -m venv ~/.venvs/ipodsync
+~/.venvs/ipodsync/bin/pip install ipodsync
+~/.venvs/ipodsync/bin/ipodsync --help
+```
+</details>
 
 Requires Python ≥ 3.9. Pure-Python — no compiler or native library needed.
 
