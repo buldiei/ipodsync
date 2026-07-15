@@ -71,18 +71,30 @@ def cmd_export(ipod, args):
 
 
 def cmd_rm(ipod, args):
+    from ipodsync.artwork_writer import compact
+
     itlp = ipod.itunes_dir / "iTunes Library.itlp"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = _backup_library(itlp, stamp) if args.backup else None
+    if args.backup:
+        _backup_artwork(ipod, stamp)
 
     guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
     lib = ItlpLibrary(itlp)
     music = ipod.music_dir if args.delete_file else None
-    loc = lib.remove_track(args.pid, music_dir=music)
+    lib.remove_track(args.pid, music_dir=music)
     lib.resign(guid)
+    live = {t["pid"] for t in lib.list_tracks()}   # remaining tracks, after removal
     lib.close()
+
+    # drop the removed track's thumbnails from ArtworkDB + repack the .ithmb files
+    stats = compact(ipod.control / "Artwork", live)
+
     print(f"✓ Removed track pid {args.pid}"
           f"{' (+ deleted the file)' if args.delete_file else ''}. Eject the iPod.")
+    if stats["removed"]:
+        print(f"  Reclaimed cover art for {stats['removed']} track"
+              f"{'s' if stats['removed'] != 1 else ''}.")
     if backup:
         print(f"  Undo: rm -rf '{itlp}' && cp -r '{backup}' '{itlp}'")
 

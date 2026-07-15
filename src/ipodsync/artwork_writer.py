@@ -243,6 +243,79 @@ def attach_cover(artwork_dir: str | Path, song_id: int, cover_bytes: bytes) -> i
     return image_id
 
 
+# --- removing artwork / compacting the .ithmb files -----------------------------
+def _offset_field_positions() -> dict[int, int]:
+    """Byte position of each format's ithmb_offset field inside a 928-byte mhii,
+    derived from the atom templates (mirrors _build_mhii's layout)."""
+    pos = len(MHII_HEADER)
+    out: dict[int, int] = {}
+    for fid in FORMAT_IDS:
+        pos += len(MHOD_CONTAINER)
+        out[fid] = pos + 20          # ithmb_offset lives at byte 20 of the mhni
+        pos += len(MHNI[fid]) + len(STRMHOD[fid])
+    return out
+
+
+_OFFSET_POS = _offset_field_positions()
+_SLOT = {fid: slot for fid, _w, _h, slot in FORMATS}
+
+
+def compact(artwork_dir: str | Path, keep_song_ids) -> dict:
+    """Drop artwork for tracks not in `keep_song_ids` and repack the .ithmb files,
+    reclaiming the freed frames. `keep_song_ids` are (signed or unsigned) pids.
+
+    Surviving frames are copied verbatim to freshly-written .ithmb files and each
+    mhii's offsets are patched to the new positions; this preserves iTunes-made and
+    ipodsync-made covers alike. `Locations.itdb` is untouched, so no cbk re-sign.
+    Returns {'kept': n, 'removed': n} (no-op if there's no ArtworkDB).
+    """
+    artwork_dir = Path(artwork_dir)
+    db_path = artwork_dir / "ArtworkDB"
+    if not db_path.exists():
+        return {"kept": 0, "removed": 0}
+    keep = {int(s) % U64 for s in keep_song_ids}
+    db = ArtworkDB.load(db_path)
+
+    old = {}
+    for fid in FORMAT_IDS:
+        p = artwork_dir / f"F{fid}_1.ithmb"
+        old[fid] = p.read_bytes() if p.exists() else b""
+    new_frames = {fid: bytearray() for fid in FORMAT_IDS}
+
+    new_blocks: list[bytes] = []
+    removed = 0
+    for m in db.mhii_blocks:
+        sid = struct.unpack_from("<Q", m, 20)[0]
+        if sid not in keep:
+            removed += 1
+            continue
+        mb = bytearray(m)
+        for fid in FORMAT_IDS:
+            slot = _SLOT[fid]
+            off = struct.unpack_from("<i", mb, _OFFSET_POS[fid])[0]
+            frame = old[fid][off:off + slot]
+            if len(frame) < slot:                       # keep every frame slot-sized
+                frame = frame + b"\x00" * (slot - len(frame))
+            struct.pack_into("<i", mb, _OFFSET_POS[fid], len(new_frames[fid]))
+            new_frames[fid] += frame
+        new_blocks.append(bytes(mb))
+
+    if removed == 0:
+        return {"kept": len(new_blocks), "removed": 0}
+
+    db.mhii_blocks = new_blocks
+    db.song_ids = {struct.unpack_from("<Q", b, 20)[0] for b in new_blocks}
+    for fid in FORMAT_IDS:
+        p = artwork_dir / f"F{fid}_1.ithmb"
+        tmp = p.with_suffix(".tmp")
+        tmp.write_bytes(bytes(new_frames[fid]))
+        tmp.replace(p)
+    tmp = db_path.with_suffix(".tmp")
+    tmp.write_bytes(db.serialize())
+    tmp.replace(db_path)
+    return {"kept": len(new_blocks), "removed": removed}
+
+
 # --- extracting the embedded cover from audio -----------------------------------
 def extract_embedded_cover(audio_path: str | Path) -> bytes | None:
     """Extract the embedded cover bytes from MP3 (APIC) or M4A (covr)."""
