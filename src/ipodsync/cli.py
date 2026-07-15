@@ -169,30 +169,66 @@ def cmd_wait(args):
     print(f"✅ iPod ready: {ipod.root}")
 
 
+AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".alac", ".mp4"}
+
+
+def _collect_add_files(args) -> list[Path]:
+    """Resolve the files to add from positional paths and/or --folder."""
+    files: list[Path] = [Path(f) for f in (args.file or [])]
+    if args.folder:
+        root = Path(args.folder)
+        if not root.is_dir():
+            raise SystemExit(f"⚠️  --folder: {root} is not a directory")
+        files += sorted(p for p in root.rglob("*")
+                        if p.is_file() and p.suffix.lower() in AUDIO_EXTS)
+    # de-dup, keep order
+    seen, out = set(), []
+    for p in files:
+        rp = p.resolve()
+        if rp not in seen:
+            seen.add(rp)
+            out.append(p)
+    return out
+
+
 def cmd_add(ipod, args):
-    """Upload an MP3 to the iPod: audio -> Fxx/ (onto the device), .itlp -> edit a copy -> back."""
+    """Upload track(s) to the iPod: audio -> Fxx/ (onto the device), .itlp -> edit a copy -> back."""
+    files = _collect_add_files(args)
+    if not files:
+        raise SystemExit("⚠️  add: give a file path, or -f/--folder DIR")
+    if len(files) > 1 and (args.title or args.artist or args.album):
+        raise SystemExit("⚠️  --title/--artist/--album only apply to a single file")
+
     itlp = ipod.itunes_dir / "iTunes Library.itlp"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = _backup_library(itlp, stamp) if args.backup else None
-
-    guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
-    print("→ copying the track onto the iPod…")
-    location, abs_path = copy_audio_to_ipod(ipod, args.file)
-
-    work = Path("/tmp") / f"itlp_add_{stamp}"
-    shutil.copytree(itlp, work)
-    overrides = {"title": args.title, "artist": args.artist, "album": args.album}
     art_dir = None if args.no_cover else ipod.control / "Artwork"
     if art_dir is not None and args.backup:
         _backup_artwork(ipod, stamp)
-    pid = add_mp3_to_library(work, location, args.file, abs_path.stat().st_size,
-                             guid, overrides=overrides, artwork_dir=art_dir)
+
+    guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
+    overrides = {"title": args.title, "artist": args.artist, "album": args.album}
+
+    # Edit one working copy of the library, add every file, then write it back once.
+    work = Path("/tmp") / f"itlp_add_{stamp}"
+    shutil.copytree(itlp, work)
+    n = len(files)
+    added = 0
+    for i, src in enumerate(files, 1):
+        prefix = f"[{i}/{n}] " if n > 1 else ""
+        print(f"→ {prefix}copying \"{src.name}\" onto the iPod…")
+        location, abs_path = copy_audio_to_ipod(ipod, str(src))
+        pid = add_mp3_to_library(work, location, str(src), abs_path.stat().st_size,
+                                 guid, overrides=overrides if n == 1 else {},
+                                 artwork_dir=art_dir)
+        cover = "" if args.no_cover else " (+ cover art)"
+        print(f"  ✓ {prefix}added \"{src.name}\"{cover}  ·  pid {pid}")
+        added += 1
+
     for name in ("Library.itdb", "Locations.itdb", "Dynamic.itdb",
                  "Extras.itdb", "Locations.itdb.cbk"):
         shutil.copy2(work / name, itlp / name)
-    cover = "" if args.no_cover else " (+ cover art)"
-    print(f"✓ Added \"{Path(args.file).name}\"{cover}  ·  pid {pid}")
-    print("  Eject the iPod, then check Songs.")
+    print(f"✓ Added {added} track{'s' if added != 1 else ''}. Eject the iPod, then check Songs.")
     if backup:
         print(f"  Undo: rm -rf '{itlp}' && cp -r '{backup}' '{itlp}'")
 
@@ -265,14 +301,17 @@ def main() -> int:
                     "The iPod mounts as a plain volume; ipodsync edits its SQLite library, "
                     "signs it (hashAB) and writes cover art.",
         epilog="Set IPODSYNC_MOUNT=/path to point at the iPod explicitly. "
-               "add/rm/cover back up the library before editing. Run "
-               "`ipodsync <command> -h` for per-command help.")
+               "On Linux, `ipodsync --mount` mounts the iPod once (sudo) and leaves it "
+               "mounted, so `add`/`list`/... just work; `ipodsync --unmount` when done. "
+               "Run `ipodsync <command> -h` for per-command help.")
     ap.add_argument("--mount", action="store_true",
-                    help="Linux: auto-mount the iPod (sudo) before the command, unmount after")
+                    help="Linux: mount the iPod (sudo) and leave it mounted, then exit")
+    ap.add_argument("--unmount", "--umount", action="store_true", dest="unmount",
+                    help="Linux: unmount the iPod mounted by --mount, then exit")
     ap.add_argument("-b", "--backup", action="store_true",
                     help="back up the library to ~/ipod-backups before editing "
                          "(off by default)")
-    sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>")
+    sub = ap.add_subparsers(dest="cmd", required=False, metavar="<command>")
 
     sub.add_parser("list", help="show tracks on the iPod")
 
@@ -286,11 +325,12 @@ def main() -> int:
     pr.add_argument("pid", type=int, help="track pid (see `list`)")
     pr.add_argument("--delete-file", action="store_true", help="also delete the audio file")
 
-    pa = sub.add_parser("add", help="upload an MP3 (cover attached automatically)")
-    pa.add_argument("file", help="path to the MP3 to upload")
-    pa.add_argument("--title", help="override the title tag")
-    pa.add_argument("--artist", help="override the artist tag")
-    pa.add_argument("--album", help="override the album tag")
+    pa = sub.add_parser("add", help="upload a track (or a whole folder); cover attached automatically")
+    pa.add_argument("file", nargs="*", help="path(s) to the audio file(s) to upload")
+    pa.add_argument("-f", "--folder", help="add every audio file in this folder (recursively)")
+    pa.add_argument("--title", help="override the title tag (single file only)")
+    pa.add_argument("--artist", help="override the artist tag (single file only)")
+    pa.add_argument("--album", help="override the album tag (single file only)")
     pa.add_argument("--no-cover", action="store_true", help="don't attach the embedded cover")
 
     sub.add_parser("status", help="report ready / no-access / not-connected")
@@ -317,26 +357,43 @@ def main() -> int:
 
     args = ap.parse_args()
 
-    WRITE_CMDS = {"add", "rm", "cover", "pl-create", "pl-add", "pl-rm", "pl-del"}
-    mounted = None
+    if args.unmount:
+        return _do_unmount()
     if args.mount:
-        from ipodsync.transport import mount_ipod
-        try:
-            mp, mounted_by_us = mount_ipod(rw=args.cmd in WRITE_CMDS)
-        except IPodNotFound as e:
-            print(f"⚠️  {e}")
-            return 2
-        os.environ["IPODSYNC_MOUNT"] = mp
-        print(f"✓ iPod mounted at {mp}")
-        mounted = mp if mounted_by_us else None
+        rc = _do_mount()
+        if rc != 0 or args.cmd is None:
+            return rc                       # standalone: mounted, now exit
+    if args.cmd is None:
+        ap.print_help()
+        return 1
+    return _dispatch(args)
 
+
+def _do_mount() -> int:
+    """Mount the iPod and leave it mounted for subsequent commands."""
+    from ipodsync.transport import mount_ipod
     try:
-        return _dispatch(args)
-    finally:
-        if mounted:
-            from ipodsync.transport import umount_ipod
-            umount_ipod(mounted)
-            print(f"✓ iPod unmounted — safe to unplug")
+        mp, mounted_by_us = mount_ipod(rw=True)
+    except IPodNotFound as e:
+        print(f"⚠️  {e}")
+        return 2
+    if mounted_by_us:
+        print(f"✓ iPod mounted at {mp}")
+    else:
+        print(f"✓ iPod already mounted at {mp}")
+    print("  Now run e.g. `ipodsync add song.mp3`; `ipodsync --unmount` when done.")
+    return 0
+
+
+def _do_unmount() -> int:
+    from ipodsync.transport import find_ipod, umount_ipod, MOUNTPOINT
+    try:
+        mp = str(find_ipod().root)
+    except IPodNotFound:
+        mp = MOUNTPOINT
+    umount_ipod(mp)
+    print(f"✓ iPod unmounted ({mp}) — safe to unplug.")
+    return 0
 
 
 def _dispatch(args) -> int:

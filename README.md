@@ -62,6 +62,8 @@ Requires Python ≥ 3.9. Pure-Python — no compiler or native library needed.
 ipodsync status                     # ready / no access / not connected
 ipodsync list
 ipodsync add "Song.mp3"             # + cover auto
+ipodsync add a.mp3 b.mp3 c.mp3      # several at once (one library write)
+ipodsync add -f ~/Music/album       # a whole folder (recursively)
 ipodsync add "Song.mp3" --no-cover
 ipodsync export ~/Music/ipod --by-album
 ipodsync cover 123456789 --image cover.jpg
@@ -78,48 +80,35 @@ The iPod is discovered under `/Volumes` (macOS) and `/media`, `/run/media`, `/mn
 
 ## Linux: mounting the iPod
 
-On macOS, Finder mounts the iPod automatically. A headless Linux box usually
-doesn't — the device shows up as a disk but stays unmounted, so `ipodsync` reports
-"iPod not found". Mount it yourself, then point `IPODSYNC_MOUNT` at it.
+On macOS, Finder mounts the iPod automatically — you never need `--mount`, just run
+`ipodsync add song.mp3`. A headless Linux box usually doesn't mount it: the device
+shows up as a disk but stays unmounted, so `ipodsync` reports "iPod not found".
 
-Find the iPod's partition (an `hfsplus` one, roughly the iPod's size):
-
-```bash
-lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT      # e.g.  sda2  14.7G  hfsplus
-```
-
-For read commands (`list` / `export`), the quickest way is `--mount`: it detects the
-device, mounts it read-only (asks for `sudo`), runs the command, then unmounts:
+The easy way is **mount once, work, unmount once**:
 
 ```bash
-ipodsync --mount list
+ipodsync --mount              # detect + mount the iPod (asks for sudo); stays mounted
+ipodsync add song-1.mp3       # add as many tracks as you like…
+ipodsync add song-2.mp3
+ipodsync add -f ~/Music/album # …or a whole folder at once
+ipodsync list
+ipodsync --unmount            # unmount when done — safe to unplug
 ```
 
-Or mount it yourself:
+`--mount` leaves the iPod at `/mnt/ipodsync`, which the following commands find on
+their own. Pass `-b` to any write command to snapshot the library first
+(`ipodsync -b add song.mp3`).
 
-```bash
-sudo modprobe hfsplus
-sudo mkdir -p /mnt/ipod
-sudo mount -t hfsplus -o ro /dev/sda2 /mnt/ipod
-IPODSYNC_MOUNT=/mnt/ipod ipodsync list
-sudo umount /mnt/ipod                     # before unplugging
-```
-
-**Writing (`add` / `rm` / `cover`) on Linux.** `--mount` handles it in one command —
-it detects the device, mounts HFS+ read-write owned by your user (asks for `sudo`),
-runs the command, then unmounts:
-
-```bash
-ipodsync --mount add song.mp3
-ipodsync --mount -b add song.mp3    # -b: snapshot the library to ~/ipod-backups first
-```
-
-Or mount it yourself and point `IPODSYNC_MOUNT` at it:
+Or manage the mount yourself and point `IPODSYNC_MOUNT` at it:
 
 ```bash
 sudo mount -t hfsplus -o rw,uid=$(id -u),gid=$(id -g) /dev/sda2 /mnt/ipod
 IPODSYNC_MOUNT=/mnt/ipod ipodsync add song.mp3
+sudo umount /mnt/ipod                     # before unplugging
 ```
+
+Find the iPod's partition with `lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT` (an `hfsplus`
+one, roughly the iPod's size — e.g. `sda2 14.7G hfsplus`).
 
 Two catches:
 
