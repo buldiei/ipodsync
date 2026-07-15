@@ -13,7 +13,7 @@ from .library import ItlpLibrary
 from .models import Track
 from .transport import IPod, IPodNotFound, find_ipod
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = [
     "find_ipod",

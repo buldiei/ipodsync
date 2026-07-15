@@ -137,3 +137,17 @@ def test_row_or_template_fallback_on_empty():
     got["title"] = "x"
     assert library._EMPTY_TEMPLATES["item"].get("title") != "x"
     c.close()
+
+
+def test_f1016_row_stride_padding():
+    """F1016 is 57×57 pixels but stored with a 116-byte (58 px) row stride — two
+    zero bytes at the end of every row, like iTunes. Wrong stride shears the thumb."""
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (80, 80), (200, 30, 30)).save(buf, format="PNG")
+    data = aw.to_rgb565(buf.getvalue(), 57, 57, 6612)
+    assert len(data) == 6612
+    stride = 6612 // 57  # 116
+    for y in range(57):
+        assert data[y * stride + 114:y * stride + 116] == b"\x00\x00", f"row {y}"

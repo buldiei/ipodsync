@@ -58,20 +58,30 @@ FIRST_IMAGE_ID = 101
 
 # --- encoding a cover to RGB565-LE ----------------------------------------------
 def to_rgb565(image_bytes: bytes, width: int, height: int, slot: int) -> bytes:
-    """Resize the cover to width×height, pack into RGB565-LE, pad to slot."""
+    """Resize the cover to width×height, pack into RGB565-LE.
+
+    Each row is padded to the device's row stride (`slot // height`), matching
+    iTunes: e.g. F1016 is 57×57 pixels but stored with a 116-byte (58 px) stride —
+    2 zero bytes at the end of every row. Getting this wrong shears the thumbnail.
+    """
     from PIL import Image
 
     im = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize(
         (width, height), Image.LANCZOS)
     rgb = im.tobytes()  # width*height*3
-    out = bytearray(width * height * 2)
-    j = 0
-    for i in range(0, len(rgb), 3):
-        v = ((rgb[i] >> 3) << 11) | ((rgb[i + 1] >> 2) << 5) | (rgb[i + 2] >> 3)
-        out[j] = v & 0xFF
-        out[j + 1] = v >> 8
-        j += 2
-    if len(out) < slot:
+    stride = slot // height          # bytes per row the device reads
+    out = bytearray()
+    for y in range(height):
+        row = bytearray(stride)      # zero-padded to the stride
+        base, j = y * width * 3, 0
+        for _ in range(width):
+            v = ((rgb[base] >> 3) << 11) | ((rgb[base + 1] >> 2) << 5) | (rgb[base + 2] >> 3)
+            row[j] = v & 0xFF
+            row[j + 1] = v >> 8
+            base += 3
+            j += 2
+        out += row
+    if len(out) < slot:              # safety (slot == height*stride already)
         out.extend(b"\x00" * (slot - len(out)))
     return bytes(out)
 
