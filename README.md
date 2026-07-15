@@ -65,7 +65,8 @@ ipodsync add "Song.mp3"             # + cover auto
 ipodsync add a.mp3 b.mp3 c.mp3      # several at once (one library write)
 ipodsync add -f ~/Music/album       # a whole folder (recursively)
 ipodsync add "Song.mp3" --no-cover
-ipodsync export ~/Music/ipod --by-album
+ipodsync export ~/Music/ipod --by-album          # download everything, in Artist/Album/ folders
+ipodsync export ~/Music/ipod --album "Breakdown" # download one album (or --artist NAME / --pid PID)
 ipodsync cover 123456789 --image cover.jpg
 ipodsync rm 123456789               # removes the track and its audio file
 ipodsync rm 123456789 --keep-file   # …but leave the audio file on the iPod

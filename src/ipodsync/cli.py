@@ -2,7 +2,7 @@
 
     ipodsync list                     # show tracks
     ipodsync export DEST [--by-album] [--no-tag]   # download everything from the iPod
-    ipodsync export DEST --pid PID     # download a single track
+    ipodsync export DEST --album NAME  # download one album (--artist / --pid also filter)
     ipodsync add FILE [--no-cover]     # upload a track (+cover auto)
     ipodsync rm PID [--keep-file]      # remove a track + its file (+resign)
     ipodsync cover PID [--image IMG]   # attach a cover to a track
@@ -54,6 +54,17 @@ def cmd_export(ipod, args):
     tracks = lib.list_tracks()
     if args.pid is not None:
         tracks = [t for t in tracks if t["pid"] == args.pid]
+    if args.album:
+        q = args.album.casefold()
+        tracks = [t for t in tracks if q in (t["album"] or "").casefold()]
+    if args.artist:
+        q = args.artist.casefold()
+        tracks = [t for t in tracks if q in (t["artist"] or "").casefold()]
+    if not tracks:
+        filt = ", ".join(f"{k}={v!r}" for k, v in
+                         (("pid", args.pid), ("album", args.album), ("artist", args.artist)) if v)
+        print(f"⚠️  no tracks match ({filt or 'empty library'}). Try `ipodsync list`.")
+        lib.close(); return
     dest = Path(args.dest)
     layout = "artist_album" if args.by_album else "flat"
     ok = 0
@@ -333,6 +344,8 @@ def main() -> int:
     pe = sub.add_parser("export", help="download tracks from the iPod (read-only)")
     pe.add_argument("dest", help="destination directory")
     pe.add_argument("--pid", type=int, help="export only this track (by pid)")
+    pe.add_argument("--album", help="only tracks whose album contains this (case-insensitive)")
+    pe.add_argument("--artist", help="only tracks whose artist contains this (case-insensitive)")
     pe.add_argument("--by-album", action="store_true", help="lay out as Artist/Album/")
     pe.add_argument("--no-tag", action="store_true", help="don't write ID3/MP4 tags")
 
