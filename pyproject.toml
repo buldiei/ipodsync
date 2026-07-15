@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ipodsync"
-version = "0.1.6"
+version = "0.1.7"
 description = "Upload music to an iPod nano 6G/7G without iTunes: SQLite library, hashAB signing, cover art (pure-Python)."
 readme = "README.md"
 requires-python = ">=3.9"

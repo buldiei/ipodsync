@@ -229,11 +229,40 @@ class ItlpLibrary:
         self.cx["Library.itdb"].commit()
 
     # --- DELETE ---------------------------------------------------------------
+    # Lookup tables that are reference-counted by `item`: (table, key col, item col).
+    _LOOKUP_TABLES = (
+        ("album", "pid", "album_pid"),
+        ("artist", "pid", "artist_pid"),
+        ("composer", "pid", "composer_pid"),
+        ("track_artist", "pid", "track_artist_pid"),
+        ("genre_map", "id", "genre_id"),
+    )
+
+    def gc_orphan_lookups(self) -> int:
+        """Delete album/artist/composer/track_artist/genre rows no longer referenced
+        by any item. Otherwise removed tracks leave behind empty albums in the UI.
+
+        A full sweep, so it also cleans up orphans left by earlier versions. Returns
+        the number of rows removed.
+        """
+        lib = self.cx["Library.itdb"]
+        removed = 0
+        for table, key, ref in self._LOOKUP_TABLES:
+            try:
+                cur = lib.execute(
+                    f'DELETE FROM "{table}" WHERE "{key}" NOT IN '
+                    f'(SELECT "{ref}" FROM item WHERE "{ref}" IS NOT NULL)')
+                removed += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            except sqlite3.OperationalError:
+                continue  # table/column absent on this device — skip it
+        lib.commit()
+        return removed
+
     def remove_track(self, pid: int, *, music_dir: Path | None = None) -> str | None:
         """Remove a track from all tables. If music_dir is given — also delete the file.
 
         Returns the location of the deleted file (or None). After removal, don't
-        forget resign(). We leave orphaned album/artist/genre (iTunes is fine with it).
+        forget resign(). Orphaned album/artist/genre rows are swept by gc_orphan_lookups().
         """
         lib = self.cx["Library.itdb"]
         r = self.cx["Locations.itdb"].execute(
@@ -249,6 +278,7 @@ class ItlpLibrary:
         self.cx["Locations.itdb"].execute("DELETE FROM location WHERE item_pid=?", (pid,))
         self.cx["Dynamic.itdb"].execute("DELETE FROM item_stats WHERE item_pid=?", (pid,))
         self.cx["Extras.itdb"].execute("DELETE FROM chapter WHERE item_pid=?", (pid,))
+        self.gc_orphan_lookups()
         for c in self.cx.values():
             c.commit()
 
