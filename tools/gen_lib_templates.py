@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "ipodsync" / "_lib_templates.py"
+OUT = ROOT / "src" / "ipodsync" / "_lib_templates.py"
 
 # (db file, table, constant name)
 SPECS = [

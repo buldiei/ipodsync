@@ -56,7 +56,16 @@ def _row(db, sql: str, args=()) -> dict | None:
     return dict(r) if r is not None else None
 
 
+def _table_columns(db, table: str) -> set:
+    return {r[1] for r in db.execute(f'PRAGMA table_info("{table}")')}
+
+
 def _insert(db, table: str, row: dict) -> None:
+    # nano 6G and 7G differ in schema (e.g. genre_map, artist, album): only write
+    # columns that exist in this device's table.
+    known = _table_columns(db, table)
+    if known:
+        row = {k: v for k, v in row.items() if k in known}
     cols = ",".join(f'"{k}"' for k in row)
     ph = ",".join("?" for _ in row)
     db.execute(f'INSERT INTO "{table}" ({cols}) VALUES ({ph})', list(row.values()))
