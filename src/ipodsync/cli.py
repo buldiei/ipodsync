@@ -4,7 +4,8 @@
     ipodsync export DEST [--by-album] [--no-tag]   # download everything from the iPod
     ipodsync export DEST --album NAME  # download one album (--artist / --pid also filter)
     ipodsync add FILE [--no-cover]     # upload a track (+cover auto)
-    ipodsync rm PID [--keep-file]      # remove a track + its file (+resign)
+    ipodsync rm PID [PID ...] [--keep-file]   # remove tracks + their files (+resign)
+    ipodsync rm --album NAME [--artist NAME]  # remove a whole album (asks first; -y skips)
     ipodsync cover PID [--image IMG]   # attach a cover to a track
 
 Export is read-only. add/rm/cover write to the database; pass -b to back the library
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,10 +83,55 @@ def cmd_export(ipod, args):
     lib.close()
 
 
+def _rm_selection(tracks: list[dict], args) -> list[dict]:
+    """The tracks `rm` should remove: the given pids, narrowed/selected by --album /
+    --artist (contains, case-insensitive — as in `export`)."""
+    if not (args.pid or args.album or args.artist):
+        raise SystemExit("⚠️  rm: give track pid(s), or --album / --artist")
+    if args.pid:
+        want = set(args.pid)
+        tracks = [t for t in tracks if t["pid"] in want]
+    if args.album:
+        q = args.album.casefold()
+        tracks = [t for t in tracks if q in (t["album"] or "").casefold()]
+    if args.artist:
+        q = args.artist.casefold()
+        tracks = [t for t in tracks if q in (t["artist"] or "").casefold()]
+    return tracks
+
+
+def _confirm_rm(tracks: list[dict], args) -> bool:
+    """--album/--artist can match more than meant: list the matches and ask first
+    (unless --yes). Explicitly given pids are removed without asking."""
+    if args.yes or not (args.album or args.artist):
+        return True
+    n = len(tracks)
+    print(f"Will remove {n} track{'s' if n != 1 else ''}:")
+    for (album, artist), k in sorted(Counter((t["album"] or "", t["artist"] or "")
+                                             for t in tracks).items()):
+        print(f"  {k:>4}  {album} — {artist}")
+    files = "" if args.keep_file else " (and their files)"
+    try:
+        answer = input(f"Remove {n} track{'s' if n != 1 else ''}{files}? [y/N] ")
+    except EOFError:                     # no terminal to ask: don't remove
+        answer = ""
+    return answer.strip().lower() in ("y", "yes")
+
+
 def cmd_rm(ipod, args):
     from ipodsync.artwork_writer import compact
 
     itlp = ipod.itunes_dir / "iTunes Library.itlp"
+    lib = ItlpLibrary(itlp)
+    tracks = _rm_selection(lib.list_tracks(), args)
+    missing = set(args.pid) - {t["pid"] for t in tracks} if args.pid else set()
+    if missing:
+        print(f"  note: no track with pid {', '.join(map(str, sorted(missing)))}")
+    if not tracks or not _confirm_rm(tracks, args):
+        lib.close()
+        print("Nothing removed." if tracks else "⚠️  no tracks match. Try `ipodsync list`.")
+        return
+
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = _backup_library(itlp, stamp) if args.backup else None
     if args.backup:
@@ -94,18 +141,21 @@ def cmd_rm(ipod, args):
         print("  note: --delete-file is now the default; drop it, or use --keep-file to keep the file.")
 
     guid = read_firewire_guid(ipod.sysinfo_extended, ipod.sysinfo, mount=ipod.root)
-    lib = ItlpLibrary(itlp)
-    music = None if args.keep_file else ipod.music_dir   # delete the file unless --keep-file
-    lib.remove_track(args.pid, music_dir=music)
+    music = None if args.keep_file else ipod.music_dir   # delete the files unless --keep-file
+    # remove everything first, then sign and compact the artwork once (both are slow)
+    lib.remove_tracks([t["pid"] for t in tracks], music_dir=music)
     lib.resign(guid)
     live = {t["pid"] for t in lib.list_tracks()}   # remaining tracks, after removal
     lib.close()
 
-    # drop the removed track's thumbnails from ArtworkDB + repack the .ithmb files
+    # drop the removed tracks' thumbnails from ArtworkDB + repack the .ithmb files
     stats = compact(ipod.control / "Artwork", live)
 
-    tail = " (kept the audio file)" if args.keep_file else " (+ deleted the file)"
-    print(f"✓ Removed track pid {args.pid}{tail}. Eject the iPod.")
+    n = len(tracks)
+    s = "s" if n != 1 else ""
+    tail = f" (kept the audio file{s})" if args.keep_file else f" (+ deleted the file{s})"
+    what = f"track pid {tracks[0]['pid']}" if n == 1 else f"{n} tracks"
+    print(f"✓ Removed {what}{tail}. Eject the iPod.")
     if stats["removed"]:
         print(f"  Reclaimed cover art for {stats['removed']} track"
               f"{'s' if stats['removed'] != 1 else ''}.")
@@ -349,8 +399,14 @@ def main() -> int:
     pe.add_argument("--by-album", action="store_true", help="lay out as Artist/Album/")
     pe.add_argument("--no-tag", action="store_true", help="don't write ID3/MP4 tags")
 
-    pr = sub.add_parser("rm", help="remove a track from the iPod")
-    pr.add_argument("pid", type=int, help="track pid (see `list`)")
+    pr = sub.add_parser("rm", help="remove tracks from the iPod (by pid, or a whole album)")
+    pr.add_argument("pid", type=int, nargs="*", help="track pid(s) (see `list`)")
+    pr.add_argument("--album", help="all tracks whose album contains this (case-insensitive); "
+                                    "lists them and asks first")
+    pr.add_argument("--artist", help="all tracks whose artist contains this (case-insensitive); "
+                                     "lists them and asks first")
+    pr.add_argument("-y", "--yes", action="store_true",
+                    help="don't ask before removing --album/--artist matches")
     pr.add_argument("--keep-file", action="store_true",
                     help="keep the audio file on the iPod (default: delete it too)")
     pr.add_argument("--delete-file", action="store_true",

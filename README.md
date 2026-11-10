@@ -70,6 +70,8 @@ ipodsync export ~/Music/ipod --album "Breakdown" # download one album (or --arti
 ipodsync cover 123456789 --image cover.jpg
 ipodsync rm 123456789               # removes the track and its audio file
 ipodsync rm 123456789 --keep-file   # …but leave the audio file on the iPod
+ipodsync rm 123456789 987654321     # several tracks at once
+ipodsync rm --album "Breakdown"     # a whole album: lists the matches and asks first (-y skips)
 ipodsync -b add "Song.mp3"          # -b: back up the library first (off by default)
 ```
 

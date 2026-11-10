@@ -382,35 +382,44 @@ class ItlpLibrary:
         return removed
 
     def remove_track(self, pid: int, *, music_dir: Path | None = None) -> str | None:
-        """Remove a track from all tables. If music_dir is given — also delete the file.
+        """Remove one track; see remove_tracks()."""
+        return self.remove_tracks([pid], music_dir=music_dir)[0]
 
-        Returns the location of the deleted file (or None). After removal, don't
-        forget resign(). Orphaned album/artist/genre rows are swept by gc_orphan_lookups().
+    def remove_tracks(self, pids, *, music_dir: Path | None = None) -> list[str | None]:
+        """Remove tracks from all tables. If music_dir (the iPod's iPod_Control/Music) is
+        given — also delete each track's audio file there.
+
+        Returns the location of each deleted file (or None). After removal, don't
+        forget resign(). Orphaned album/artist/genre rows are swept by gc_orphan_lookups()
+        and the counts recomputed once, after all the tracks are gone.
         """
         lib = self.cx["Library.itdb"]
-        r = self.cx["Locations.itdb"].execute(
-            "SELECT location,file_size FROM location WHERE item_pid=?", (pid,)).fetchone()
-        location = r["location"] if r else None
-        fsize = (r["file_size"] if r else 0) or 0
+        locations = []
+        for pid in pids:
+            r = self.cx["Locations.itdb"].execute(
+                "SELECT location,file_size FROM location WHERE item_pid=?", (pid,)).fetchone()
+            locations.append(r["location"] if r else None)
+            fsize = (r["file_size"] if r else 0) or 0
 
-        lib.execute("DELETE FROM item WHERE pid=?", (pid,))
-        lib.execute("DELETE FROM avformat_info WHERE item_pid=?", (pid,))
-        lib.execute("DELETE FROM item_to_container WHERE item_pid=?", (pid,))
-        lib.execute("UPDATE track_size_calc SET size=MAX(0,COALESCE(size,0)-?) WHERE kind='audio'",
-                    (fsize,))
-        self.cx["Locations.itdb"].execute("DELETE FROM location WHERE item_pid=?", (pid,))
-        self.cx["Dynamic.itdb"].execute("DELETE FROM item_stats WHERE item_pid=?", (pid,))
-        self.cx["Extras.itdb"].execute("DELETE FROM chapter WHERE item_pid=?", (pid,))
+            lib.execute("DELETE FROM item WHERE pid=?", (pid,))
+            lib.execute("DELETE FROM avformat_info WHERE item_pid=?", (pid,))
+            lib.execute("DELETE FROM item_to_container WHERE item_pid=?", (pid,))
+            lib.execute("UPDATE track_size_calc SET size=MAX(0,COALESCE(size,0)-?) WHERE kind='audio'",
+                        (fsize,))
+            self.cx["Locations.itdb"].execute("DELETE FROM location WHERE item_pid=?", (pid,))
+            self.cx["Dynamic.itdb"].execute("DELETE FROM item_stats WHERE item_pid=?", (pid,))
+            self.cx["Extras.itdb"].execute("DELETE FROM chapter WHERE item_pid=?", (pid,))
         self.gc_orphan_lookups()
         self._recount(lib)
         for c in self.cx.values():
             c.commit()
 
-        if music_dir is not None and location:
-            f = Path(music_dir) / location
-            if f.exists():
-                f.unlink()
-        return location
+        if music_dir is not None:
+            for location in locations:
+                f = Path(music_dir) / location if location else None
+                if f is not None and f.exists():
+                    f.unlink()
+        return locations
 
     # --- PLAYLISTS -------------------------------------------------------------
     # container (Library.itdb) = playlist; item_to_container = membership;
