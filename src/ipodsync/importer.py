@@ -65,6 +65,7 @@ def read_mp3_meta(path: Path) -> dict:
         yr = 0
     return {
         "title": g("title"), "artist": g("artist"), "album": g("album"),
+        "album_artist": g("albumartist"),
         "genre": g("genre"), "track_number": tn, "year": yr,
         "total_time_ms": int(info.length * 1000),
         "bit_rate": int(getattr(info, "bitrate", 0) // 1000),
@@ -97,7 +98,8 @@ def add_mp3_to_library(itlp_dir: str | Path, location: str, meta_src: str | Path
 
     tm = TrackMeta(
         location=location, title=meta["title"], artist=meta.get("artist", ""),
-        album=meta.get("album", ""), genre=meta.get("genre", ""),
+        album=meta.get("album", ""), album_artist=meta.get("album_artist", ""),
+        genre=meta.get("genre", ""),
         total_time_ms=meta["total_time_ms"], track_number=meta.get("track_number", 0),
         year=meta.get("year", 0), bit_rate=meta.get("bit_rate", 0),
         sample_rate=meta.get("sample_rate", 44100), audio_format=MP3_AUDIO_FORMAT,

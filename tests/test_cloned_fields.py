@@ -84,9 +84,10 @@ def _make_itlp(tmp_path):
     return d
 
 
-def _add(lib, title, artist, album, n=1):
+def _add(lib, title, artist, album, n=1, album_artist=""):
     return lib.add_track(TrackMeta(location=f"F00/{title[:4]}.mp3", title=title,
-                                   artist=artist, album=album, track_number=n), date=0)
+                                   artist=artist, album=album, track_number=n,
+                                   album_artist=album_artist), date=0)
 
 
 def _get(cx, sql, *args):
@@ -140,6 +141,29 @@ def test_new_track_inherits_nothing_from_the_template_track(tmp_path):
             assert new[col] == 0, col
         # no composer: the Unknown Composer row, sorted after the last named composer
         assert (new["composer_pid"], new["composer_order"]) == (2, 200)
+    finally:
+        lib.close()
+
+
+def test_album_artist_keeps_an_album_with_several_track_artists_together(tmp_path):
+    lib = ItlpLibrary(_make_itlp(tmp_path))
+    try:
+        a = _add(lib, "Field of Hopes", "Toby Fox", "DELTARUNE", 1, album_artist="Toby Fox")
+        b = _add(lib, "Don't Forget", "Laura Shigihara", "DELTARUNE", 2, album_artist="Toby Fox")
+        cx = lib.cx["Library.itdb"]
+        toby = _get(cx, "SELECT pid FROM artist WHERE name='Toby Fox'")[0]
+        albums = cx.execute("SELECT pid, artist_pid, item_count, artist_count_calc FROM album "
+                            "WHERE name='DELTARUNE'").fetchall()
+        assert [tuple(r)[1:] for r in albums] == [(toby, 2, 2)]       # one album, by Toby Fox
+        for pid in (a, b):
+            item = _get(cx, "SELECT * FROM item WHERE pid=?", pid)
+            assert (item["album_pid"], item["artist_pid"]) == (albums[0]["pid"], toby)
+            assert (item["album_artist"], item["sort_album_artist"]) == ("Toby Fox", "Toby Fox")
+        # the track keeps its own artist; like iTunes, no album-artist row for her
+        laura = _get(cx, "SELECT i.artist, t.name FROM item i JOIN track_artist t "
+                         "ON t.pid=i.track_artist_pid WHERE i.pid=?", b)
+        assert tuple(laura) == ("Laura Shigihara", "Laura Shigihara")
+        assert _get(cx, "SELECT count(*) FROM artist WHERE name='Laura Shigihara'")[0] == 0
     finally:
         lib.close()
 

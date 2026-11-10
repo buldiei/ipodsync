@@ -144,6 +144,7 @@ class TrackMeta:
     file_size: int = 0
     extension: int = 1297101600      # 0x4d503320 (4CC 'MP3 ')
     kind: str = "MPEG audio file"
+    album_artist: str = ""           # empty: the album is listed under `artist`
 
 
 class ItlpLibrary:
@@ -247,7 +248,9 @@ class ItlpLibrary:
                 _insert(lib, "genre_map", {"id": genre_id, "genre": m.genre, "has_music": 1,
                                            "artist_count_calc": 1, "album_count_calc": 1,
                                            "album_artist_count_calc": 1})
-        artist_pid = self._get_or_create_lookup(lib, "artist", m.artist)
+        # `artist` holds album artists (iTunes falls back to the track artist);
+        # the track's own artist goes into track_artist below.
+        artist_pid = self._get_or_create_lookup(lib, "artist", m.album_artist or m.artist)
         # iTunes keys albums by name + artist ("Greatest Hits" exists once per artist)
         album_pid = self._get_or_create_lookup(lib, "album", m.album,
                                                match={"artist_pid": artist_pid},
@@ -261,7 +264,9 @@ class ItlpLibrary:
             _insert(lib, "track_artist", tmpl_ta)
 
         # item (clone template + patch); the *_order columns are set by _resort()
-        tmpl_item.update({k: v for k, v in _ITEM_RESET.items() if k in tmpl_item})
+        reset = dict(_ITEM_RESET, album_artist=m.album_artist or None,
+                     sort_album_artist=m.album_artist or None)
+        tmpl_item.update({k: v for k, v in reset.items() if k in tmpl_item})
         if "composer_pid" in tmpl_item:      # no composer tag: iTunes' Unknown Composer
             unk = _row(lib, "SELECT pid FROM composer WHERE name_order=?", (_UNKNOWN_ORDER,))
             tmpl_item.update(composer_pid=unk["pid"] if unk else 0,
