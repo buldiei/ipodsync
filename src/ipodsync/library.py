@@ -6,9 +6,9 @@ to list dozens of columns) + regeneration of Locations.itdb.cbk.
 
 Only Locations.itdb is hash-protected (via .cbk) — the other .itdb are plain SQLite.
 
-STATUS: first version. Sort fields (*_order) are set approximately
-(appended at the end); the device usually recomputes them. Test on the
-device iteratively (with an .itlp backup).
+Sort fields (*_order): the device does not sort, it lists songs/artists/albums by
+these precomputed positions and builds its letter headers from them. After adding,
+_resort() renumbers them the way iTunes does (see _resequence).
 """
 from __future__ import annotations
 
@@ -67,6 +67,45 @@ def _max_order(db, table: str, col: str) -> int:
     return cur.fetchone()[0] or 0
 
 
+# iTunes numbers each sorted list 100, 200, ... (equal names share a value) and
+# gives "Unknown Artist/Album" 0xFFFFFFFF so they stay last.
+_ORDER_STEP = 100
+_UNKNOWN_ORDER = 0xFFFFFFFF
+
+
+def _sort_key(text) -> str:
+    """Case-insensitive; empty names sort after everything (as iTunes does)."""
+    return text.casefold() if text else "\U0010ffff"
+
+
+def _resequence(db, table: str, pk: str, text_col: str, order_col: str, unplaced=()) -> None:
+    """Renumber table.order_col as iTunes does, keeping the existing order.
+
+    Rows in `unplaced`, rows with no order and rows past the Unknown sentinel
+    (left by older ipodsync versions) are inserted at their alphabetical position.
+    The existing order is kept as is: iTunes sorts with locale rules (e.g. V = W
+    in Swedish) that a plain case-insensitive compare would not reproduce.
+    """
+    placed: dict[int, list] = {}           # old order -> [sort key, pks]
+    pending = []
+    for pid, text, order in list(db.execute(
+            f'SELECT "{pk}","{text_col}","{order_col}" FROM "{table}"')):
+        if pid in unplaced or (order is None and text) or (order or 0) > _UNKNOWN_ORDER:
+            pending.append((_sort_key(text), pid))
+        elif order is not None and order != _UNKNOWN_ORDER:
+            placed.setdefault(order, [_sort_key(text), []])[1].append(pid)
+    groups = [placed[o] for o in sorted(placed)]
+    for key, pid in sorted(pending):
+        same = next((g for g in groups if g[0] == key), None)
+        if same:
+            same[1].append(pid)
+        else:
+            i = next((i for i, g in enumerate(groups) if g[0] > key), len(groups))
+            groups.insert(i, [key, [pid]])
+    db.executemany(f'UPDATE "{table}" SET "{order_col}"=? WHERE "{pk}"=?',
+                   [((i + 1) * _ORDER_STEP, pid) for i, g in enumerate(groups) for pid in g[1]])
+
+
 @dataclass
 class TrackMeta:
     location: str            # "Fxx/NAME.ext" relative to iPod_Control/Music
@@ -102,16 +141,51 @@ class ItlpLibrary:
         for c in self.cx.values():
             c.close()
 
-    def _get_or_create_lookup(self, cur, table, name, name_order) -> int:
-        """Find a row by name, or clone a template one with a new pid/name."""
+    def _get_or_create_lookup(self, cur, table, name) -> int:
+        """Find a row by name, or clone a template one with a new pid/name.
+        A new row has no name_order yet: _resort() places it."""
         got = _row(cur, f'SELECT * FROM "{table}" WHERE name=?', (name,))
         if got:
             return got["pid"]
         tmpl = _row_or_template(cur, f'SELECT * FROM "{table}" LIMIT 1', table)
         pid = _rand_pid()
-        tmpl.update(pid=pid, name=name, sort_name=name, name_order=name_order)
+        tmpl.update(pid=pid, name=name, sort_name=name, name_order=None)
         _insert(cur, table, tmpl)
         return pid
+
+    def _resort(self, cur) -> None:
+        """Renumber the songs/artists/albums *_order columns after adding tracks.
+
+        New rows (no order) and rows misplaced by older versions (past the Unknown
+        sentinel) are sorted into place; the item's copies of its artist/album
+        positions are then refreshed from the lookup tables, as iTunes keeps them.
+        """
+        u = _UNKNOWN_ORDER
+        misplaced = "name_order IS NULL OR name_order > ?"
+        albums = {r[0] for r in cur.execute(f"SELECT pid FROM album WHERE {misplaced}", (u,))}
+        items = {r[0] for r in cur.execute(
+            "SELECT pid FROM item WHERE title_order IS NULL OR title_order > ? "
+            f"OR album_pid IN (SELECT pid FROM album WHERE {misplaced}) "
+            f"OR artist_pid IN (SELECT pid FROM artist WHERE {misplaced})", (u, u, u))}
+        _resequence(cur, "artist", "pid", "sort_name", "name_order")
+        _resequence(cur, "track_artist", "pid", "sort_name", "name_order")
+        _resequence(cur, "album", "pid", "sort_name", "name_order", albums)
+        _resequence(cur, "album", "pid", "sort_name", "sort_order", albums)
+        _resequence(cur, "item", "pid", "sort_title", "title_order", items)
+        # iTunes leaves album_by_artist_order empty; older versions filled it in.
+        cur.executemany("UPDATE item SET album_by_artist_order=NULL WHERE pid=?",
+                        [(p,) for p in items])
+        # Tracks of the Unknown artist sort after the last named one, not at the sentinel.
+        cur.execute("UPDATE album SET artist_order=(SELECT name_order FROM artist "
+                    "WHERE pid=album.artist_pid) WHERE artist_pid IN (SELECT pid FROM artist)")
+        cur.execute("UPDATE item SET album_order=(SELECT sort_order FROM album "
+                    "WHERE pid=item.album_pid) WHERE album_pid IN (SELECT pid FROM album)")
+        for col, table, ref in (("album_artist_order", "artist", "artist_pid"),
+                                ("artist_order", "track_artist", "track_artist_pid")):
+            cur.execute(
+                f'UPDATE item SET "{col}"=(SELECT MIN(name_order, (SELECT MAX(name_order) '
+                f'FROM "{table}" WHERE name_order < ?)) FROM "{table}" WHERE pid=item."{ref}") '
+                f'WHERE "{ref}" IN (SELECT pid FROM "{table}")', (u,))
 
     def add_track(self, m: TrackMeta, *, date: int) -> int:
         """Add a track to all tables. Returns the pid of the new item."""
@@ -138,28 +212,25 @@ class ItlpLibrary:
                 _insert(lib, "genre_map", {"id": genre_id, "genre": m.genre, "has_music": 1,
                                            "artist_count_calc": 1, "album_count_calc": 1,
                                            "album_artist_count_calc": 1})
-        nord = _max_order(lib, "artist", "name_order") + 100
-        artist_pid = self._get_or_create_lookup(lib, "artist", m.artist, nord)
-        aord = _max_order(lib, "album", "name_order") + 100
-        album_pid = self._get_or_create_lookup(lib, "album", m.album, aord)
+        artist_pid = self._get_or_create_lookup(lib, "artist", m.artist)
+        album_pid = self._get_or_create_lookup(lib, "album", m.album)
         # track_artist (small sequential pids)
         ta = _row(lib, "SELECT pid FROM track_artist WHERE name=?", (m.artist,))
         track_artist_pid = ta["pid"] if ta else (_max_order(lib, "track_artist", "pid") + 1)
         if not ta:
             tmpl_ta = _row_or_template(lib, "SELECT * FROM track_artist LIMIT 1", "track_artist")
-            tmpl_ta.update(pid=track_artist_pid, name=m.artist, sort_name=m.artist, name_order=nord)
+            tmpl_ta.update(pid=track_artist_pid, name=m.artist, sort_name=m.artist, name_order=None)
             _insert(lib, "track_artist", tmpl_ta)
 
-        # item (clone template + patch)
-        end = _max_order(lib, "item", "title_order") + 100
+        # item (clone template + patch); the *_order columns are set by _resort()
         tmpl_item.update(
             pid=item_pid, title=m.title, artist=m.artist, album=m.album,
             sort_title=m.title, sort_artist=m.artist, sort_album=m.album,
             year=m.year, total_time_ms=m.total_time_ms, track_number=m.track_number,
             genre_id=genre_id, album_pid=album_pid, artist_pid=artist_pid,
             track_artist_pid=track_artist_pid, date_modified=date,
-            title_order=end, album_order=end, artist_order=nord,
-            album_artist_order=nord, album_by_artist_order=nord,
+            title_order=None, album_order=None, artist_order=None,
+            album_artist_order=None, album_by_artist_order=None,
         )
         _insert(lib, "item", tmpl_item)
 
@@ -174,6 +245,7 @@ class ItlpLibrary:
         # track_size_calc.audio += file_size
         lib.execute("UPDATE track_size_calc SET size=COALESCE(size,0)+? WHERE kind='audio'",
                     (m.file_size,))
+        self._resort(lib)
 
         # location
         tmpl_loc = _row_or_template(loc, "SELECT * FROM location LIMIT 1", "location")
