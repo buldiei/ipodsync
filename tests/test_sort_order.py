@@ -36,9 +36,10 @@ def _make_itlp(tmp_path):
             album_pid INTEGER, artist_pid INTEGER, track_artist_pid INTEGER,
             date_modified INTEGER, title_order INTEGER, album_order INTEGER,
             artist_order INTEGER, album_artist_order INTEGER, album_by_artist_order INTEGER);
-        CREATE TABLE artist (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT, name_order INTEGER);
+        CREATE TABLE artist (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT, name_order INTEGER,
+            album_count INTEGER);
         CREATE TABLE track_artist (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT,
-            name_order INTEGER);
+            name_order INTEGER, album_count INTEGER);
         CREATE TABLE album (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT, name_order INTEGER,
             sort_order INTEGER, artist_pid INTEGER, artist_order INTEGER, item_count INTEGER,
             artist_count_calc INTEGER);
@@ -53,7 +54,7 @@ def _make_itlp(tmp_path):
         INSERT INTO db_info VALUES (1);
         INSERT INTO track_size_calc VALUES ('audio', 0);
 
-        INSERT INTO artist VALUES (1, 'Lego', 'Lego', 100), (2, 'Louis Armstrong',
+        INSERT INTO artist (pid, name, sort_name, name_order) VALUES (1, 'Lego', 'Lego', 100), (2, 'Louis Armstrong',
             'Louis Armstrong', 200), (3, '', '', 300), (8, 'Toby Fox', 'Toby Fox', {UNKNOWN + 100}),
             (9, 'Unknown Artist', 'Unknown Artist', {UNKNOWN});
         INSERT INTO track_artist SELECT * FROM artist;

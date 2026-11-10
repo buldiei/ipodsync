@@ -213,6 +213,15 @@ class ItlpLibrary:
                 f'ELSE name_order END FROM "{table}" WHERE pid=item."{ref}") '
                 f'WHERE "{ref}" IN (SELECT pid FROM "{table}")', (u, _unknown_order(cur, table)))
 
+    def _recount(self, cur) -> None:
+        """Recompute the counts iTunes keeps per artist/album (e.g. "N albums" under
+        an artist): the number of distinct albums among the artist's tracks, and the
+        number of tracks on each album."""
+        for table, ref in (("artist", "artist_pid"), ("track_artist", "track_artist_pid")):
+            cur.execute(f'UPDATE "{table}" SET album_count=(SELECT count(DISTINCT album_pid) '
+                        f'FROM item WHERE "{ref}"="{table}".pid)')
+        cur.execute("UPDATE album SET item_count=(SELECT count(*) FROM item WHERE album_pid=album.pid)")
+
     def add_track(self, m: TrackMeta, *, date: int) -> int:
         """Add a track to all tables. Returns the pid of the new item."""
         lib = self.cx["Library.itdb"].cursor()
@@ -267,9 +276,8 @@ class ItlpLibrary:
             album_artist_order=None, album_by_artist_order=None,
         )
         _insert(lib, "item", tmpl_item)
-        lib.execute("UPDATE album SET item_count=(SELECT count(*) FROM item WHERE album_pid=album.pid), "
-                    "artist_count_calc=(SELECT count(DISTINCT track_artist_pid) FROM item "
-                    "WHERE album_pid=album.pid) WHERE pid=?", (album_pid,))
+        lib.execute("UPDATE album SET artist_count_calc=(SELECT count(DISTINCT track_artist_pid) "
+                    "FROM item WHERE album_pid=album.pid) WHERE pid=?", (album_pid,))
 
         # avformat_info
         _insert(lib, "avformat_info", {"item_pid": item_pid, "audio_format": m.audio_format,
@@ -283,6 +291,7 @@ class ItlpLibrary:
         lib.execute("UPDATE track_size_calc SET size=COALESCE(size,0)+? WHERE kind='audio'",
                     (m.file_size,))
         self._resort(lib)
+        self._recount(lib)
 
         # location
         tmpl_loc = _row_or_template(loc, "SELECT * FROM location LIMIT 1", "location")
@@ -388,6 +397,7 @@ class ItlpLibrary:
         self.cx["Dynamic.itdb"].execute("DELETE FROM item_stats WHERE item_pid=?", (pid,))
         self.cx["Extras.itdb"].execute("DELETE FROM chapter WHERE item_pid=?", (pid,))
         self.gc_orphan_lookups()
+        self._recount(lib)
         for c in self.cx.values():
             c.commit()
 

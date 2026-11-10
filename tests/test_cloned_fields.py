@@ -38,9 +38,10 @@ def _make_itlp(tmp_path):
             date_modified INTEGER, title_order INTEGER, album_order INTEGER,
             artist_order INTEGER, album_artist_order INTEGER, album_by_artist_order INTEGER,
             composer_order INTEGER, artwork_status INTEGER, artwork_cache_id INTEGER);
-        CREATE TABLE artist (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT, name_order INTEGER);
+        CREATE TABLE artist (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT, name_order INTEGER,
+            album_count INTEGER);
         CREATE TABLE track_artist (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT,
-            name_order INTEGER);
+            name_order INTEGER, album_count INTEGER);
         CREATE TABLE album (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT, name_order INTEGER,
             sort_order INTEGER, artist_pid INTEGER, artist_order INTEGER, item_count INTEGER,
             artist_count_calc INTEGER, all_compilations INTEGER, has_any_compilations INTEGER,
@@ -58,8 +59,9 @@ def _make_itlp(tmp_path):
         INSERT INTO db_info VALUES (1);
         INSERT INTO track_size_calc VALUES ('audio', 0);
 
-        INSERT INTO artist VALUES (10, 'Metallica', 'Metallica', 100),
-            (19, 'Unknown Artist', 'Unknown Artist', {UNKNOWN});
+        -- Metallica's album_count is stale (3, but its tracks are on one album)
+        INSERT INTO artist VALUES (10, 'Metallica', 'Metallica', 100, 3),
+            (19, 'Unknown Artist', 'Unknown Artist', {UNKNOWN}, 1);
         INSERT INTO track_artist SELECT * FROM artist;
         INSERT INTO album VALUES
             (20, 'Death Magnetic', 'Death Magnetic', 100, 100, 10, 100, 2, 1, 1, 1, 1, 101),
@@ -138,6 +140,25 @@ def test_new_track_inherits_nothing_from_the_template_track(tmp_path):
             assert new[col] == 0, col
         # no composer: the Unknown Composer row, sorted after the last named composer
         assert (new["composer_pid"], new["composer_order"]) == (2, 200)
+    finally:
+        lib.close()
+
+
+def test_counts_follow_the_tracks_on_add_and_remove(tmp_path):
+    lib = ItlpLibrary(_make_itlp(tmp_path))
+    try:
+        _add(lib, "Papercut", "Linkin Park", "Hybrid Theory")
+        numb = _add(lib, "Numb", "Linkin Park", "Meteora")
+        cx = lib.cx["Library.itdb"]
+        # the artist row is cloned from Metallica's (album_count 3): counted, not inherited
+        assert _get(cx, "SELECT album_count FROM artist WHERE name='Linkin Park'")[0] == 2
+        assert _get(cx, "SELECT album_count FROM track_artist WHERE name='Linkin Park'")[0] == 2
+        assert _get(cx, "SELECT album_count FROM artist WHERE name='Metallica'")[0] == 1
+        assert _get(cx, "SELECT item_count FROM album WHERE name='Meteora'")[0] == 1
+
+        lib.remove_track(numb)
+        assert _get(cx, "SELECT album_count FROM artist WHERE name='Linkin Park'")[0] == 1
+        assert _get(cx, "SELECT album_count FROM track_artist WHERE name='Linkin Park'")[0] == 1
     finally:
         lib.close()
 
