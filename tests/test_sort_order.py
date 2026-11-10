@@ -40,7 +40,8 @@ def _make_itlp(tmp_path):
         CREATE TABLE track_artist (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT,
             name_order INTEGER);
         CREATE TABLE album (pid INTEGER PRIMARY KEY, name TEXT, sort_name TEXT, name_order INTEGER,
-            sort_order INTEGER, artist_pid INTEGER, artist_order INTEGER);
+            sort_order INTEGER, artist_pid INTEGER, artist_order INTEGER, item_count INTEGER,
+            artist_count_calc INTEGER);
         CREATE TABLE genre_map (id INTEGER PRIMARY KEY, genre TEXT, has_music INTEGER,
             artist_count_calc INTEGER, album_count_calc INTEGER, album_artist_count_calc INTEGER);
         CREATE TABLE avformat_info (item_pid INTEGER, audio_format INTEGER, bit_rate INTEGER,
@@ -57,7 +58,8 @@ def _make_itlp(tmp_path):
             (9, 'Unknown Artist', 'Unknown Artist', {UNKNOWN});
         INSERT INTO track_artist SELECT * FROM artist;
         -- Toby Fox's album got sort_order 100, cloned from a template row
-        INSERT INTO album VALUES (11, 'Bricks', 'Bricks', 100, 100, 1, 100),
+        INSERT INTO album (pid, name, sort_name, name_order, sort_order, artist_pid,
+            artist_order) VALUES (11, 'Bricks', 'Bricks', 100, 100, 1, 100),
             (12, 'What a Wonderful World', 'What a Wonderful World', 200, 200, 2, 200),
             (18, 'UNDERTALE', 'UNDERTALE', {UNKNOWN + 100}, 100, 8, {UNKNOWN + 100}),
             (19, 'Unknown Album', '', {UNKNOWN}, 300, 9, {UNKNOWN});

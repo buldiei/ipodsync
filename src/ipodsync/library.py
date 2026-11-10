@@ -106,6 +106,28 @@ def _resequence(db, table: str, pk: str, text_col: str, order_col: str, unplaced
                    [((i + 1) * _ORDER_STEP, pid) for i, g in enumerate(groups) for pid in g[1]])
 
 
+def _unknown_order(db, table: str) -> int:
+    """Where an item of the Unknown artist/composer sorts (its row keeps the
+    sentinel): with the empty names if there are any, else after the last name."""
+    empty, last = db.execute(
+        f"SELECT MAX(CASE WHEN COALESCE(sort_name,'')='' THEN name_order END), "
+        f'MAX(name_order) FROM "{table}" WHERE name_order < ?', (_UNKNOWN_ORDER,)).fetchone()
+    return empty if empty is not None else (last or 0) + _ORDER_STEP
+
+
+# Fields of a cloned template row that describe the template's own track/album;
+# a new row gets iTunes' "nothing known" values instead (only columns that exist).
+_ITEM_RESET = {
+    "album_artist": None, "sort_album_artist": None, "composer": None,
+    "sort_composer": None, "comment": None, "is_compilation": 0, "track_count": 0,
+    "disc_number": 0, "disc_count": 0, "artwork_status": 0, "artwork_cache_id": 0,
+}
+_ALBUM_RESET = {
+    "all_compilations": 0, "has_any_compilations": 0, "artwork_status": 0,
+    "artwork_item_pid": 0,
+}
+
+
 @dataclass
 class TrackMeta:
     location: str            # "Fxx/NAME.ext" relative to iPod_Control/Music
@@ -141,15 +163,19 @@ class ItlpLibrary:
         for c in self.cx.values():
             c.close()
 
-    def _get_or_create_lookup(self, cur, table, name) -> int:
-        """Find a row by name, or clone a template one with a new pid/name.
+    def _get_or_create_lookup(self, cur, table, name, match=None, reset=None) -> int:
+        """Find a row by name (and the `match` columns, e.g. an album's artist_pid), or
+        clone a template one with a new pid/name/match, resetting the `reset` columns.
         A new row has no name_order yet: _resort() places it."""
-        got = _row(cur, f'SELECT * FROM "{table}" WHERE name=?', (name,))
+        match = match or {}
+        where = " AND ".join(f'"{k}"=?' for k in ("name", *match))
+        got = _row(cur, f'SELECT * FROM "{table}" WHERE {where}', (name, *match.values()))
         if got:
             return got["pid"]
         tmpl = _row_or_template(cur, f'SELECT * FROM "{table}" LIMIT 1', table)
         pid = _rand_pid()
-        tmpl.update(pid=pid, name=name, sort_name=name, name_order=None)
+        tmpl.update({k: v for k, v in (reset or {}).items() if k in tmpl})
+        tmpl.update(pid=pid, name=name, sort_name=name, name_order=None, **match)
         _insert(cur, table, tmpl)
         return pid
 
@@ -175,17 +201,17 @@ class ItlpLibrary:
         # iTunes leaves album_by_artist_order empty; older versions filled it in.
         cur.executemany("UPDATE item SET album_by_artist_order=NULL WHERE pid=?",
                         [(p,) for p in items])
-        # Tracks of the Unknown artist sort after the last named one, not at the sentinel.
         cur.execute("UPDATE album SET artist_order=(SELECT name_order FROM artist "
                     "WHERE pid=album.artist_pid) WHERE artist_pid IN (SELECT pid FROM artist)")
         cur.execute("UPDATE item SET album_order=(SELECT sort_order FROM album "
                     "WHERE pid=item.album_pid) WHERE album_pid IN (SELECT pid FROM album)")
+        # Tracks of the Unknown artist sort after the last named one, not at the sentinel.
         for col, table, ref in (("album_artist_order", "artist", "artist_pid"),
                                 ("artist_order", "track_artist", "track_artist_pid")):
             cur.execute(
-                f'UPDATE item SET "{col}"=(SELECT MIN(name_order, (SELECT MAX(name_order) '
-                f'FROM "{table}" WHERE name_order < ?)) FROM "{table}" WHERE pid=item."{ref}") '
-                f'WHERE "{ref}" IN (SELECT pid FROM "{table}")', (u,))
+                f'UPDATE item SET "{col}"=(SELECT CASE name_order WHEN ? THEN ? '
+                f'ELSE name_order END FROM "{table}" WHERE pid=item."{ref}") '
+                f'WHERE "{ref}" IN (SELECT pid FROM "{table}")', (u, _unknown_order(cur, table)))
 
     def add_track(self, m: TrackMeta, *, date: int) -> int:
         """Add a track to all tables. Returns the pid of the new item."""
@@ -213,7 +239,10 @@ class ItlpLibrary:
                                            "artist_count_calc": 1, "album_count_calc": 1,
                                            "album_artist_count_calc": 1})
         artist_pid = self._get_or_create_lookup(lib, "artist", m.artist)
-        album_pid = self._get_or_create_lookup(lib, "album", m.album)
+        # iTunes keys albums by name + artist ("Greatest Hits" exists once per artist)
+        album_pid = self._get_or_create_lookup(lib, "album", m.album,
+                                               match={"artist_pid": artist_pid},
+                                               reset=_ALBUM_RESET)
         # track_artist (small sequential pids)
         ta = _row(lib, "SELECT pid FROM track_artist WHERE name=?", (m.artist,))
         track_artist_pid = ta["pid"] if ta else (_max_order(lib, "track_artist", "pid") + 1)
@@ -223,6 +252,11 @@ class ItlpLibrary:
             _insert(lib, "track_artist", tmpl_ta)
 
         # item (clone template + patch); the *_order columns are set by _resort()
+        tmpl_item.update({k: v for k, v in _ITEM_RESET.items() if k in tmpl_item})
+        if "composer_pid" in tmpl_item:      # no composer tag: iTunes' Unknown Composer
+            unk = _row(lib, "SELECT pid FROM composer WHERE name_order=?", (_UNKNOWN_ORDER,))
+            tmpl_item.update(composer_pid=unk["pid"] if unk else 0,
+                             composer_order=_unknown_order(lib, "composer") if unk else 0)
         tmpl_item.update(
             pid=item_pid, title=m.title, artist=m.artist, album=m.album,
             sort_title=m.title, sort_artist=m.artist, sort_album=m.album,
@@ -233,6 +267,9 @@ class ItlpLibrary:
             album_artist_order=None, album_by_artist_order=None,
         )
         _insert(lib, "item", tmpl_item)
+        lib.execute("UPDATE album SET item_count=(SELECT count(*) FROM item WHERE album_pid=album.pid), "
+                    "artist_count_calc=(SELECT count(DISTINCT track_artist_pid) FROM item "
+                    "WHERE album_pid=album.pid) WHERE pid=?", (album_pid,))
 
         # avformat_info
         _insert(lib, "avformat_info", {"item_pid": item_pid, "audio_format": m.audio_format,
