@@ -66,6 +66,8 @@ def read_mp3_meta(path: Path) -> dict:
     return {
         "title": g("title"), "artist": g("artist"), "album": g("album"),
         "album_artist": g("albumartist"),
+        "sort_title": g("titlesort"), "sort_artist": g("artistsort"),
+        "sort_album": g("albumsort"), "sort_album_artist": g("albumartistsort"),
         "genre": g("genre"), "track_number": tn, "year": yr,
         "total_time_ms": int(info.length * 1000),
         "bit_rate": int(getattr(info, "bitrate", 0) // 1000),
@@ -93,12 +95,17 @@ def add_mp3_to_library(itlp_dir: str | Path, location: str, meta_src: str | Path
     meta = read_mp3_meta(Path(meta_src))
     if overrides:
         meta.update({k: v for k, v in overrides.items() if v is not None})
+        for k, v in overrides.items():       # the file's sort tag belongs to the old name
+            if v is not None:
+                meta.pop(f"sort_{k}", None)
     if not meta.get("title"):
         meta["title"] = Path(meta_src).stem
 
     tm = TrackMeta(
         location=location, title=meta["title"], artist=meta.get("artist", ""),
         album=meta.get("album", ""), album_artist=meta.get("album_artist", ""),
+        sort_title=meta.get("sort_title", ""), sort_artist=meta.get("sort_artist", ""),
+        sort_album=meta.get("sort_album", ""), sort_album_artist=meta.get("sort_album_artist", ""),
         genre=meta.get("genre", ""),
         total_time_ms=meta["total_time_ms"], track_number=meta.get("track_number", 0),
         year=meta.get("year", 0), bit_rate=meta.get("bit_rate", 0),

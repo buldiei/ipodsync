@@ -13,6 +13,7 @@ _resort() renumbers them the way iTunes does (see _resequence).
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -71,6 +72,21 @@ def _max_order(db, table: str, col: str) -> int:
 # gives "Unknown Artist/Album" 0xFFFFFFFF so they stay last.
 _ORDER_STEP = 100
 _UNKNOWN_ORDER = 0xFFFFFFFF
+
+
+_SORT_ARTICLE = re.compile(r"(?:the|an?)\s+", re.IGNORECASE)
+
+
+def _sort_name(name):
+    """The name iTunes sorts by when the file has no sort tag: without a leading
+    "The "/"A "/"An ", then without leading punctuation ("...And Justice for All")."""
+    s = name or ""
+    m = _SORT_ARTICLE.match(s)
+    if m and s[m.end():]:
+        s = s[m.end():]
+    while s and not s[0].isalnum():
+        s = s[1:]
+    return s or None
 
 
 def _sort_key(text) -> str:
@@ -145,6 +161,11 @@ class TrackMeta:
     extension: int = 1297101600      # 0x4d503320 (4CC 'MP3 ')
     kind: str = "MPEG audio file"
     album_artist: str = ""           # empty: the album is listed under `artist`
+    # sort tags from the file; empty: derived from the name (see _sort_name)
+    sort_title: str = ""
+    sort_artist: str = ""
+    sort_album: str = ""
+    sort_album_artist: str = ""
 
 
 class ItlpLibrary:
@@ -164,10 +185,10 @@ class ItlpLibrary:
         for c in self.cx.values():
             c.close()
 
-    def _get_or_create_lookup(self, cur, table, name, match=None, reset=None) -> int:
+    def _get_or_create_lookup(self, cur, table, name, sort_name, match=None, reset=None) -> int:
         """Find a row by name (and the `match` columns, e.g. an album's artist_pid), or
-        clone a template one with a new pid/name/match, resetting the `reset` columns.
-        A new row has no name_order yet: _resort() places it."""
+        clone a template one with a new pid/name/sort_name/match, resetting the `reset`
+        columns. A new row has no name_order yet: _resort() places it."""
         match = match or {}
         where = " AND ".join(f'"{k}"=?' for k in ("name", *match))
         got = _row(cur, f'SELECT * FROM "{table}" WHERE {where}', (name, *match.values()))
@@ -176,7 +197,7 @@ class ItlpLibrary:
         tmpl = _row_or_template(cur, f'SELECT * FROM "{table}" LIMIT 1', table)
         pid = _rand_pid()
         tmpl.update({k: v for k, v in (reset or {}).items() if k in tmpl})
-        tmpl.update(pid=pid, name=name, sort_name=name, name_order=None, **match)
+        tmpl.update(pid=pid, name=name, sort_name=sort_name, name_order=None, **match)
         _insert(cur, table, tmpl)
         return pid
 
@@ -248,11 +269,19 @@ class ItlpLibrary:
                 _insert(lib, "genre_map", {"id": genre_id, "genre": m.genre, "has_music": 1,
                                            "artist_count_calc": 1, "album_count_calc": 1,
                                            "album_artist_count_calc": 1})
+        # sort names: the file's sort tags, else derived from the names as iTunes does
+        sort_title = m.sort_title or _sort_name(m.title)
+        sort_artist = m.sort_artist or _sort_name(m.artist)
+        sort_album = m.sort_album or _sort_name(m.album)
+        sort_album_artist = ((m.sort_album_artist or _sort_name(m.album_artist))
+                             if m.album_artist else None)
         # `artist` holds album artists (iTunes falls back to the track artist);
         # the track's own artist goes into track_artist below.
-        artist_pid = self._get_or_create_lookup(lib, "artist", m.album_artist or m.artist)
+        artist_pid = self._get_or_create_lookup(
+            lib, "artist", m.album_artist or m.artist,
+            sort_album_artist if m.album_artist else sort_artist)
         # iTunes keys albums by name + artist ("Greatest Hits" exists once per artist)
-        album_pid = self._get_or_create_lookup(lib, "album", m.album,
+        album_pid = self._get_or_create_lookup(lib, "album", m.album, sort_album,
                                                match={"artist_pid": artist_pid},
                                                reset=_ALBUM_RESET)
         # track_artist (small sequential pids)
@@ -260,12 +289,13 @@ class ItlpLibrary:
         track_artist_pid = ta["pid"] if ta else (_max_order(lib, "track_artist", "pid") + 1)
         if not ta:
             tmpl_ta = _row_or_template(lib, "SELECT * FROM track_artist LIMIT 1", "track_artist")
-            tmpl_ta.update(pid=track_artist_pid, name=m.artist, sort_name=m.artist, name_order=None)
+            tmpl_ta.update(pid=track_artist_pid, name=m.artist, sort_name=sort_artist,
+                           name_order=None)
             _insert(lib, "track_artist", tmpl_ta)
 
         # item (clone template + patch); the *_order columns are set by _resort()
         reset = dict(_ITEM_RESET, album_artist=m.album_artist or None,
-                     sort_album_artist=m.album_artist or None)
+                     sort_album_artist=sort_album_artist)
         tmpl_item.update({k: v for k, v in reset.items() if k in tmpl_item})
         if "composer_pid" in tmpl_item:      # no composer tag: iTunes' Unknown Composer
             unk = _row(lib, "SELECT pid FROM composer WHERE name_order=?", (_UNKNOWN_ORDER,))
@@ -273,7 +303,7 @@ class ItlpLibrary:
                              composer_order=_unknown_order(lib, "composer") if unk else 0)
         tmpl_item.update(
             pid=item_pid, title=m.title, artist=m.artist, album=m.album,
-            sort_title=m.title, sort_artist=m.artist, sort_album=m.album,
+            sort_title=sort_title, sort_artist=sort_artist, sort_album=sort_album,
             year=m.year, total_time_ms=m.total_time_ms, track_number=m.track_number,
             genre_id=genre_id, album_pid=album_pid, artist_pid=artist_pid,
             track_artist_pid=track_artist_pid, date_modified=date,
