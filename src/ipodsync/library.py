@@ -6,13 +6,14 @@ to list dozens of columns) + regeneration of Locations.itdb.cbk.
 
 Only Locations.itdb is hash-protected (via .cbk) — the other .itdb are plain SQLite.
 
-STATUS: first version. Sort fields (*_order) are set approximately
-(appended at the end); the device usually recomputes them. Test on the
-device iteratively (with an .itlp backup).
+Sort fields (*_order): the device does not sort, it lists songs/artists/albums by
+these precomputed positions and builds its letter headers from them. After adding,
+_resort() renumbers them the way iTunes does (see _resequence).
 """
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -67,6 +68,82 @@ def _max_order(db, table: str, col: str) -> int:
     return cur.fetchone()[0] or 0
 
 
+# iTunes numbers each sorted list 100, 200, ... (equal names share a value) and
+# gives "Unknown Artist/Album" 0xFFFFFFFF so they stay last.
+_ORDER_STEP = 100
+_UNKNOWN_ORDER = 0xFFFFFFFF
+
+
+_SORT_ARTICLE = re.compile(r"(?:the|an?)\s+", re.IGNORECASE)
+
+
+def _sort_name(name):
+    """The name iTunes sorts by when the file has no sort tag: without a leading
+    "The "/"A "/"An ", then without leading punctuation ("...And Justice for All")."""
+    s = name or ""
+    m = _SORT_ARTICLE.match(s)
+    if m and s[m.end():]:
+        s = s[m.end():]
+    while s and not s[0].isalnum():
+        s = s[1:]
+    return s or None
+
+
+def _sort_key(text) -> str:
+    """Case-insensitive; empty names sort after everything (as iTunes does)."""
+    return text.casefold() if text else "\U0010ffff"
+
+
+def _resequence(db, table: str, pk: str, text_col: str, order_col: str, unplaced=()) -> None:
+    """Renumber table.order_col as iTunes does, keeping the existing order.
+
+    Rows in `unplaced`, rows with no order and rows past the Unknown sentinel
+    (left by older ipodsync versions) are inserted at their alphabetical position.
+    The existing order is kept as is: iTunes sorts with locale rules (e.g. V = W
+    in Swedish) that a plain case-insensitive compare would not reproduce.
+    """
+    placed: dict[int, list] = {}           # old order -> [sort key, pks]
+    pending = []
+    for pid, text, order in list(db.execute(
+            f'SELECT "{pk}","{text_col}","{order_col}" FROM "{table}"')):
+        if pid in unplaced or (order is None and text) or (order or 0) > _UNKNOWN_ORDER:
+            pending.append((_sort_key(text), pid))
+        elif order is not None and order != _UNKNOWN_ORDER:
+            placed.setdefault(order, [_sort_key(text), []])[1].append(pid)
+    groups = [placed[o] for o in sorted(placed)]
+    for key, pid in sorted(pending):
+        same = next((g for g in groups if g[0] == key), None)
+        if same:
+            same[1].append(pid)
+        else:
+            i = next((i for i, g in enumerate(groups) if g[0] > key), len(groups))
+            groups.insert(i, [key, [pid]])
+    db.executemany(f'UPDATE "{table}" SET "{order_col}"=? WHERE "{pk}"=?',
+                   [((i + 1) * _ORDER_STEP, pid) for i, g in enumerate(groups) for pid in g[1]])
+
+
+def _unknown_order(db, table: str) -> int:
+    """Where an item of the Unknown artist/composer sorts (its row keeps the
+    sentinel): with the empty names if there are any, else after the last name."""
+    empty, last = db.execute(
+        f"SELECT MAX(CASE WHEN COALESCE(sort_name,'')='' THEN name_order END), "
+        f'MAX(name_order) FROM "{table}" WHERE name_order < ?', (_UNKNOWN_ORDER,)).fetchone()
+    return empty if empty is not None else (last or 0) + _ORDER_STEP
+
+
+# Fields of a cloned template row that describe the template's own track/album;
+# a new row gets iTunes' "nothing known" values instead (only columns that exist).
+_ITEM_RESET = {
+    "album_artist": None, "sort_album_artist": None, "composer": None,
+    "sort_composer": None, "comment": None, "is_compilation": 0, "track_count": 0,
+    "disc_number": 0, "disc_count": 0, "artwork_status": 0, "artwork_cache_id": 0,
+}
+_ALBUM_RESET = {
+    "all_compilations": 0, "has_any_compilations": 0, "artwork_status": 0,
+    "artwork_item_pid": 0,
+}
+
+
 @dataclass
 class TrackMeta:
     location: str            # "Fxx/NAME.ext" relative to iPod_Control/Music
@@ -83,6 +160,12 @@ class TrackMeta:
     file_size: int = 0
     extension: int = 1297101600      # 0x4d503320 (4CC 'MP3 ')
     kind: str = "MPEG audio file"
+    album_artist: str = ""           # empty: the album is listed under `artist`
+    # sort tags from the file; empty: derived from the name (see _sort_name)
+    sort_title: str = ""
+    sort_artist: str = ""
+    sort_album: str = ""
+    sort_album_artist: str = ""
 
 
 class ItlpLibrary:
@@ -102,16 +185,64 @@ class ItlpLibrary:
         for c in self.cx.values():
             c.close()
 
-    def _get_or_create_lookup(self, cur, table, name, name_order) -> int:
-        """Find a row by name, or clone a template one with a new pid/name."""
-        got = _row(cur, f'SELECT * FROM "{table}" WHERE name=?', (name,))
+    def _get_or_create_lookup(self, cur, table, name, sort_name, match=None, reset=None) -> int:
+        """Find a row by name (and the `match` columns, e.g. an album's artist_pid), or
+        clone a template one with a new pid/name/sort_name/match, resetting the `reset`
+        columns. A new row has no name_order yet: _resort() places it."""
+        match = match or {}
+        where = " AND ".join(f'"{k}"=?' for k in ("name", *match))
+        got = _row(cur, f'SELECT * FROM "{table}" WHERE {where}', (name, *match.values()))
         if got:
             return got["pid"]
         tmpl = _row_or_template(cur, f'SELECT * FROM "{table}" LIMIT 1', table)
         pid = _rand_pid()
-        tmpl.update(pid=pid, name=name, sort_name=name, name_order=name_order)
+        tmpl.update({k: v for k, v in (reset or {}).items() if k in tmpl})
+        tmpl.update(pid=pid, name=name, sort_name=sort_name, name_order=None, **match)
         _insert(cur, table, tmpl)
         return pid
+
+    def _resort(self, cur) -> None:
+        """Renumber the songs/artists/albums *_order columns after adding tracks.
+
+        New rows (no order) and rows misplaced by older versions (past the Unknown
+        sentinel) are sorted into place; the item's copies of its artist/album
+        positions are then refreshed from the lookup tables, as iTunes keeps them.
+        """
+        u = _UNKNOWN_ORDER
+        misplaced = "name_order IS NULL OR name_order > ?"
+        albums = {r[0] for r in cur.execute(f"SELECT pid FROM album WHERE {misplaced}", (u,))}
+        items = {r[0] for r in cur.execute(
+            "SELECT pid FROM item WHERE title_order IS NULL OR title_order > ? "
+            f"OR album_pid IN (SELECT pid FROM album WHERE {misplaced}) "
+            f"OR artist_pid IN (SELECT pid FROM artist WHERE {misplaced})", (u, u, u))}
+        _resequence(cur, "artist", "pid", "sort_name", "name_order")
+        _resequence(cur, "track_artist", "pid", "sort_name", "name_order")
+        _resequence(cur, "album", "pid", "sort_name", "name_order", albums)
+        _resequence(cur, "album", "pid", "sort_name", "sort_order", albums)
+        _resequence(cur, "item", "pid", "sort_title", "title_order", items)
+        # iTunes leaves album_by_artist_order empty; older versions filled it in.
+        cur.executemany("UPDATE item SET album_by_artist_order=NULL WHERE pid=?",
+                        [(p,) for p in items])
+        cur.execute("UPDATE album SET artist_order=(SELECT name_order FROM artist "
+                    "WHERE pid=album.artist_pid) WHERE artist_pid IN (SELECT pid FROM artist)")
+        cur.execute("UPDATE item SET album_order=(SELECT sort_order FROM album "
+                    "WHERE pid=item.album_pid) WHERE album_pid IN (SELECT pid FROM album)")
+        # Tracks of the Unknown artist sort after the last named one, not at the sentinel.
+        for col, table, ref in (("album_artist_order", "artist", "artist_pid"),
+                                ("artist_order", "track_artist", "track_artist_pid")):
+            cur.execute(
+                f'UPDATE item SET "{col}"=(SELECT CASE name_order WHEN ? THEN ? '
+                f'ELSE name_order END FROM "{table}" WHERE pid=item."{ref}") '
+                f'WHERE "{ref}" IN (SELECT pid FROM "{table}")', (u, _unknown_order(cur, table)))
+
+    def _recount(self, cur) -> None:
+        """Recompute the counts iTunes keeps per artist/album (e.g. "N albums" under
+        an artist): the number of distinct albums among the artist's tracks, and the
+        number of tracks on each album."""
+        for table, ref in (("artist", "artist_pid"), ("track_artist", "track_artist_pid")):
+            cur.execute(f'UPDATE "{table}" SET album_count=(SELECT count(DISTINCT album_pid) '
+                        f'FROM item WHERE "{ref}"="{table}".pid)')
+        cur.execute("UPDATE album SET item_count=(SELECT count(*) FROM item WHERE album_pid=album.pid)")
 
     def add_track(self, m: TrackMeta, *, date: int) -> int:
         """Add a track to all tables. Returns the pid of the new item."""
@@ -138,30 +269,50 @@ class ItlpLibrary:
                 _insert(lib, "genre_map", {"id": genre_id, "genre": m.genre, "has_music": 1,
                                            "artist_count_calc": 1, "album_count_calc": 1,
                                            "album_artist_count_calc": 1})
-        nord = _max_order(lib, "artist", "name_order") + 100
-        artist_pid = self._get_or_create_lookup(lib, "artist", m.artist, nord)
-        aord = _max_order(lib, "album", "name_order") + 100
-        album_pid = self._get_or_create_lookup(lib, "album", m.album, aord)
+        # sort names: the file's sort tags, else derived from the names as iTunes does
+        sort_title = m.sort_title or _sort_name(m.title)
+        sort_artist = m.sort_artist or _sort_name(m.artist)
+        sort_album = m.sort_album or _sort_name(m.album)
+        sort_album_artist = ((m.sort_album_artist or _sort_name(m.album_artist))
+                             if m.album_artist else None)
+        # `artist` holds album artists (iTunes falls back to the track artist);
+        # the track's own artist goes into track_artist below.
+        artist_pid = self._get_or_create_lookup(
+            lib, "artist", m.album_artist or m.artist,
+            sort_album_artist if m.album_artist else sort_artist)
+        # iTunes keys albums by name + artist ("Greatest Hits" exists once per artist)
+        album_pid = self._get_or_create_lookup(lib, "album", m.album, sort_album,
+                                               match={"artist_pid": artist_pid},
+                                               reset=_ALBUM_RESET)
         # track_artist (small sequential pids)
         ta = _row(lib, "SELECT pid FROM track_artist WHERE name=?", (m.artist,))
         track_artist_pid = ta["pid"] if ta else (_max_order(lib, "track_artist", "pid") + 1)
         if not ta:
             tmpl_ta = _row_or_template(lib, "SELECT * FROM track_artist LIMIT 1", "track_artist")
-            tmpl_ta.update(pid=track_artist_pid, name=m.artist, sort_name=m.artist, name_order=nord)
+            tmpl_ta.update(pid=track_artist_pid, name=m.artist, sort_name=sort_artist,
+                           name_order=None)
             _insert(lib, "track_artist", tmpl_ta)
 
-        # item (clone template + patch)
-        end = _max_order(lib, "item", "title_order") + 100
+        # item (clone template + patch); the *_order columns are set by _resort()
+        reset = dict(_ITEM_RESET, album_artist=m.album_artist or None,
+                     sort_album_artist=sort_album_artist)
+        tmpl_item.update({k: v for k, v in reset.items() if k in tmpl_item})
+        if "composer_pid" in tmpl_item:      # no composer tag: iTunes' Unknown Composer
+            unk = _row(lib, "SELECT pid FROM composer WHERE name_order=?", (_UNKNOWN_ORDER,))
+            tmpl_item.update(composer_pid=unk["pid"] if unk else 0,
+                             composer_order=_unknown_order(lib, "composer") if unk else 0)
         tmpl_item.update(
             pid=item_pid, title=m.title, artist=m.artist, album=m.album,
-            sort_title=m.title, sort_artist=m.artist, sort_album=m.album,
+            sort_title=sort_title, sort_artist=sort_artist, sort_album=sort_album,
             year=m.year, total_time_ms=m.total_time_ms, track_number=m.track_number,
             genre_id=genre_id, album_pid=album_pid, artist_pid=artist_pid,
             track_artist_pid=track_artist_pid, date_modified=date,
-            title_order=end, album_order=end, artist_order=nord,
-            album_artist_order=nord, album_by_artist_order=nord,
+            title_order=None, album_order=None, artist_order=None,
+            album_artist_order=None, album_by_artist_order=None,
         )
         _insert(lib, "item", tmpl_item)
+        lib.execute("UPDATE album SET artist_count_calc=(SELECT count(DISTINCT track_artist_pid) "
+                    "FROM item WHERE album_pid=album.pid) WHERE pid=?", (album_pid,))
 
         # avformat_info
         _insert(lib, "avformat_info", {"item_pid": item_pid, "audio_format": m.audio_format,
@@ -174,6 +325,8 @@ class ItlpLibrary:
         # track_size_calc.audio += file_size
         lib.execute("UPDATE track_size_calc SET size=COALESCE(size,0)+? WHERE kind='audio'",
                     (m.file_size,))
+        self._resort(lib)
+        self._recount(lib)
 
         # location
         tmpl_loc = _row_or_template(loc, "SELECT * FROM location LIMIT 1", "location")
@@ -259,34 +412,44 @@ class ItlpLibrary:
         return removed
 
     def remove_track(self, pid: int, *, music_dir: Path | None = None) -> str | None:
-        """Remove a track from all tables. If music_dir is given — also delete the file.
+        """Remove one track; see remove_tracks()."""
+        return self.remove_tracks([pid], music_dir=music_dir)[0]
 
-        Returns the location of the deleted file (or None). After removal, don't
-        forget resign(). Orphaned album/artist/genre rows are swept by gc_orphan_lookups().
+    def remove_tracks(self, pids, *, music_dir: Path | None = None) -> list[str | None]:
+        """Remove tracks from all tables. If music_dir (the iPod's iPod_Control/Music) is
+        given — also delete each track's audio file there.
+
+        Returns the location of each deleted file (or None). After removal, don't
+        forget resign(). Orphaned album/artist/genre rows are swept by gc_orphan_lookups()
+        and the counts recomputed once, after all the tracks are gone.
         """
         lib = self.cx["Library.itdb"]
-        r = self.cx["Locations.itdb"].execute(
-            "SELECT location,file_size FROM location WHERE item_pid=?", (pid,)).fetchone()
-        location = r["location"] if r else None
-        fsize = (r["file_size"] if r else 0) or 0
+        locations = []
+        for pid in pids:
+            r = self.cx["Locations.itdb"].execute(
+                "SELECT location,file_size FROM location WHERE item_pid=?", (pid,)).fetchone()
+            locations.append(r["location"] if r else None)
+            fsize = (r["file_size"] if r else 0) or 0
 
-        lib.execute("DELETE FROM item WHERE pid=?", (pid,))
-        lib.execute("DELETE FROM avformat_info WHERE item_pid=?", (pid,))
-        lib.execute("DELETE FROM item_to_container WHERE item_pid=?", (pid,))
-        lib.execute("UPDATE track_size_calc SET size=MAX(0,COALESCE(size,0)-?) WHERE kind='audio'",
-                    (fsize,))
-        self.cx["Locations.itdb"].execute("DELETE FROM location WHERE item_pid=?", (pid,))
-        self.cx["Dynamic.itdb"].execute("DELETE FROM item_stats WHERE item_pid=?", (pid,))
-        self.cx["Extras.itdb"].execute("DELETE FROM chapter WHERE item_pid=?", (pid,))
+            lib.execute("DELETE FROM item WHERE pid=?", (pid,))
+            lib.execute("DELETE FROM avformat_info WHERE item_pid=?", (pid,))
+            lib.execute("DELETE FROM item_to_container WHERE item_pid=?", (pid,))
+            lib.execute("UPDATE track_size_calc SET size=MAX(0,COALESCE(size,0)-?) WHERE kind='audio'",
+                        (fsize,))
+            self.cx["Locations.itdb"].execute("DELETE FROM location WHERE item_pid=?", (pid,))
+            self.cx["Dynamic.itdb"].execute("DELETE FROM item_stats WHERE item_pid=?", (pid,))
+            self.cx["Extras.itdb"].execute("DELETE FROM chapter WHERE item_pid=?", (pid,))
         self.gc_orphan_lookups()
+        self._recount(lib)
         for c in self.cx.values():
             c.commit()
 
-        if music_dir is not None and location:
-            f = Path(music_dir) / location
-            if f.exists():
-                f.unlink()
-        return location
+        if music_dir is not None:
+            for location in locations:
+                f = Path(music_dir) / location if location else None
+                if f is not None and f.exists():
+                    f.unlink()
+        return locations
 
     # --- PLAYLISTS -------------------------------------------------------------
     # container (Library.itdb) = playlist; item_to_container = membership;

@@ -10,7 +10,7 @@ the terminal, on macOS and Linux. The iPod mounts as a plain volume; `ipodsync`
 edits its SQLite library, signs it (hashAB) and **generates cover art itself**.
 
 > ⚠️ Alpha. Works on real hardware, but it writes to the player's binary database,
-> so **keep backups** (the tool makes one before every edit). Browsing the iPod in
+> so **keep backups** (pass `-b` to snapshot the library before an edit). Browsing the iPod in
 > Finder or the Music app is fine — just don't let Apple's software **auto-sync** it:
 > a sync rebuilds the library from your computer and would drop manually-added tracks
 > (keep the iPod in "manually manage music" mode).
@@ -20,7 +20,10 @@ edits its SQLite library, signs it (hashAB) and **generates cover art itself**.
 - `list` / `export` — inspect and download tracks from the device (with tags).
 - `add` — upload an MP3, metadata from tags, **cover art attached automatically**
   (from an embedded APIC/covr): shown both in Now Playing and in list/Albums views.
-- `rm` — remove a track (+file), re-sign.
+- **fits into an iTunes-made library** — added tracks are sorted into the Songs,
+  Artists and Albums lists like iTunes does it ("The Killers" under K, or by the file's
+  sort tags), albums are listed under their album artist, and the album counts stay right.
+- `rm` — remove tracks (+files) by pid, or a whole album with `--album`, re-sign.
 - playlists — `playlists` / `pl-create` / `pl-add` / `pl-rm` / `pl-del`.
 - `cover` — attach a cover to an already-uploaded track.
 - works on an **empty (wiped) library** too — no iTunes needed to initialize it.
@@ -70,6 +73,8 @@ ipodsync export ~/Music/ipod --album "Breakdown" # download one album (or --arti
 ipodsync cover 123456789 --image cover.jpg
 ipodsync rm 123456789               # removes the track and its audio file
 ipodsync rm 123456789 --keep-file   # …but leave the audio file on the iPod
+ipodsync rm 123456789 987654321     # several tracks at once
+ipodsync rm --album "Breakdown"     # a whole album: lists the matches and asks first (-y skips)
 ipodsync -b add "Song.mp3"          # -b: back up the library first (off by default)
 ```
 
@@ -132,6 +137,9 @@ Two catches:
 - **Transport** — mass storage: files are written under `iPod_Control/`.
 - **Database** — SQLite `iTunes Library.itlp/*.itdb` (not `iTunesCDB`, which the
   device regenerates on its own). Only `Locations.itdb` is hash-protected (`.cbk`).
+- **Sort order** — the nano doesn't sort its lists: it reads precomputed `*_order`
+  columns and builds its letter headers from them. After an add, ipodsync renumbers
+  them the way iTunes does, so new tracks land at their alphabetical position.
 - **hashAB** — anti-tamper `.cbk` signature (white-box AES). **Pure-Python** port of
   [dstaley/hashab](https://github.com/dstaley/hashab) (public domain), 100/100 test
   vectors. No compiler or native lib — the package installs everywhere.
@@ -144,6 +152,7 @@ Two catches:
 |---|---|
 | Upload / remove / export / playlists (MP3) | ✅ confirmed on nano 7G |
 | Cover art (pure-Python) | ✅ confirmed on nano 7G |
+| Adding to an iTunes-made library (sorting, album artist, counts) | ✅ confirmed on nano 7G |
 | Empty-library bootstrap | ✅ |
 | **Pure-Python hashAB** (no native lib, installs everywhere) | ✅ 100/100 vectors |
 | Cross-platform device discovery (macOS + Linux) | ✅ |
